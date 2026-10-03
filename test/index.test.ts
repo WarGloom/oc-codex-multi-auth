@@ -5805,7 +5805,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		}
 	});
 
-	describe("quota fallback safety with real account eligibility", () => {
+		describe("quota fallback safety with real account eligibility", () => {
 		const entryModel = "gpt-5.6-sol";
 		const makeManager = async (accounts: import("../lib/storage.js").AccountMetadataV3[]) => {
 			const prompts = await import("../lib/prompts/codex.js");
@@ -5841,6 +5841,15 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				method: "POST", body: JSON.stringify({ model }),
 			});
 		};
+		it("returns 429 without changing models when JSON auto-fallback is disabled", async () => {
+			const config = await import("../lib/config.js");
+			vi.spyOn(config, "getRetryAllAccountsMaxWaitMs").mockReturnValue(30_000);
+			vi.mocked(config.loadPluginConfig).mockReturnValue({ disableGpt56AutoFallback: true });
+			await makeManager([{ ...accountRecord(), rateLimitResetTimes: { [entryModel]: Date.now() + 60_000 } }]);
+			const { sdk } = await setupPlugin();
+			expect((await send(sdk)).status).toBe(429);
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+		});
 
 		beforeEach(async () => {
 			vi.useFakeTimers();

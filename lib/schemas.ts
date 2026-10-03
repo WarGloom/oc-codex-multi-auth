@@ -60,6 +60,10 @@ export const PluginConfigSchema = z.object({
 	retryAllAccountsMaxWaitMs: z.number().min(0).optional(),
 	retryAllAccountsMaxRetries: z.number().int().min(0).optional(),
 	unsupportedCodexPolicy: z.enum(["strict", "fallback"]).optional(),
+	disableGpt6AutoFallback: z.boolean().optional(),
+	disableGpt56AutoFallback: z.boolean().optional(),
+	disableGpt55AutoFallback: z.boolean().optional(),
+	disableCodexAutoFallback: z.boolean().optional(),
 	fallbackOnUnsupportedCodexModel: z.boolean().optional(),
 	fallbackToGpt52OnUnsupportedGpt53: z.boolean().optional(),
 	unsupportedCodexFallbackChain: z.record(

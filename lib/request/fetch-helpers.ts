@@ -307,6 +307,18 @@ export interface UnsupportedCodexModelInfo {
 	unsupportedModel?: string;
 }
 
+type AutoFallbackConfig = Partial<Record<
+	"disableGpt6AutoFallback" | "disableGpt56AutoFallback" | "disableGpt55AutoFallback" | "disableCodexAutoFallback",
+	boolean
+>>;
+
+const AUTO_FALLBACK_CONFIG_KEYS: Record<string, keyof AutoFallbackConfig> = {
+	CODEX_AUTH_DISABLE_GPT6_AUTO_FALLBACK: "disableGpt6AutoFallback",
+	CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK: "disableGpt56AutoFallback",
+	CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK: "disableGpt55AutoFallback",
+	CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK: "disableCodexAutoFallback",
+};
+
 export interface ResolveUnsupportedCodexFallbackOptions {
 	requestedModel: string | undefined;
 	errorBody: unknown;
@@ -314,6 +326,7 @@ export interface ResolveUnsupportedCodexFallbackOptions {
 	fallbackOnUnsupportedCodexModel: boolean;
 	fallbackToGpt52OnUnsupportedGpt53: boolean;
 	customChain?: Record<string, string[]>;
+	autoFallbackConfig?: AutoFallbackConfig;
 }
 
 function canonicalizeModelName(model: string | undefined): string | undefined {
@@ -505,6 +518,7 @@ export function getUnsupportedCodexModelInfo(
 export function isDefaultAutoFallbackModel(
 	currentModel: string,
 	attemptedModels?: Iterable<string>,
+	config: AutoFallbackConfig = {},
 ): boolean {
 	const attempted = new Set<string>();
 	for (const model of attemptedModels ?? []) {
@@ -518,7 +532,10 @@ export function isDefaultAutoFallbackModel(
 	const optOutEnv = entryModel
 		? DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV[entryModel]
 		: undefined;
-	return !!optOutEnv && process.env[optOutEnv] !== "1";
+	if (!optOutEnv) return false;
+	const env = process.env[optOutEnv];
+	const configKey = AUTO_FALLBACK_CONFIG_KEYS[optOutEnv];
+	return env !== undefined ? env !== "1" : !configKey || config[configKey] !== true;
 }
 
 export interface PickFallbackChainTargetOptions {
@@ -594,15 +611,8 @@ export function resolveUnsupportedCodexFallbackModel(
 	// pooled account with the same unsupported-model response. Continuation models
 	// such as `gpt-5.4` only auto-fallback when the attempted set proves the chain
 	// started from a default entry point; direct user selection remains strict.
-	const autoFallbackEntryModel = resolveAutoFallbackEntryModel(
-		currentModel,
-		attempted,
-	);
-	const autoFallbackOptOutEnv = autoFallbackEntryModel
-		? DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV[autoFallbackEntryModel]
-		: undefined;
 	const shouldAutoFallbackForDefaultSelector =
-		!!autoFallbackOptOutEnv && process.env[autoFallbackOptOutEnv] !== "1";
+		isDefaultAutoFallbackModel(currentModel, attempted, options.autoFallbackConfig);
 
 	if (
 		!options.fallbackOnUnsupportedCodexModel &&
