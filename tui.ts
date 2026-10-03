@@ -515,8 +515,10 @@ function layoutChildren(node: LayoutNode): LayoutNode[] {
 /**
  * Measure the row this line sits on, by walking up to it.
  *
- * The walk looks for the nearest ancestor laid out as a row with something else
- * in it - the prompt's bottom row, where the model label is the something else.
+ * The walk looks for a row with something else in it that is not itself inside
+ * another row - the prompt's bottom row, beside the model label. The inner
+ * right-hand row can contain multiple plugins, but is sized by their content:
+ * measuring it would feed this line's previous length back into its budget.
  * That row stretches to the prompt's inner width, which is the number the
  * terminal width fails to be whenever a sidebar is open, and the only number on
  * that row this line does not influence.
@@ -536,6 +538,7 @@ export function measureStatusSlot(node: unknown): StatusSlotMetrics {
 	for (const [position, ancestor] of chain.entries()) {
 		if (position === 0) continue;
 		if (ancestor.primaryAxis !== "row") continue;
+		if (asLayoutNode(ancestor.parent)?.primaryAxis === "row") continue;
 		const rowWidth = layoutSize(ancestor.width);
 		if (!rowWidth) continue;
 		const children = layoutChildren(ancestor);
