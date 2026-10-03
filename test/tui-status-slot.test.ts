@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { measureStatusSlot, showsQuotaForSession } from "../tui.js";
+import { formatPromptStatusText, type CompactQuotaStatus } from "../lib/tui-status.js";
 
 /**
  * A stand-in for the host's laid-out prompt row.
@@ -24,6 +25,8 @@ function promptRow(options: {
 	rowWidth: number;
 	/** The extra box the slot machinery inserts between node and row. */
 	wrapped?: boolean;
+	/** A second plugin makes the right-hand wrapper content-sized. */
+	siblingWidth?: number;
 }): FakeNode {
 	const label: FakeNode = {
 		width: options.labelWidth,
@@ -32,11 +35,16 @@ function promptRow(options: {
 		getChildren: () => [],
 	};
 	const status: FakeNode = { width: 10, height: 1, getChildren: () => [] };
+	const sibling: FakeNode = { width: options.siblingWidth, getChildren: () => [] };
 	const wrapper: FakeNode = {
-		width: 10,
+		get width() {
+			return options.siblingWidth === undefined
+				? 10
+				: Math.min(options.rowWidth, (status.width ?? 0) + options.siblingWidth + 1);
+		},
 		height: 1,
 		primaryAxis: "row",
-		getChildren: () => [status],
+		getChildren: () => options.siblingWidth === undefined ? [status] : [status, sibling],
 	};
 	const row: FakeNode = {
 		width: options.rowWidth,
@@ -47,6 +55,7 @@ function promptRow(options: {
 	label.parent = row;
 	wrapper.parent = row;
 	status.parent = wrapper;
+	sibling.parent = wrapper;
 	if (options.wrapped === false) {
 		// Straight into the row, with no wrapper of its own.
 		status.parent = row;
@@ -56,6 +65,32 @@ function promptRow(options: {
 }
 
 describe("measureStatusSlot", () => {
+	it.each([
+		{ rowWidth: 114, expected: "[codex@example.test] - 7d 61%" },
+		{ rowWidth: 60, expected: "7d 61%" },
+	])("keeps the variant stable with a sibling plugin at $rowWidth columns", ({ rowWidth, expected }) => {
+		// Given the host's footer containing a content-sized two-plugin row.
+		const status = promptRow({ labelWidth: 40, labelHeight: 1, rowWidth, siblingWidth: 34 });
+		const quota: CompactQuotaStatus = {
+			type: "ready",
+			accountIndex: 1,
+			accountCount: 2,
+			accountEmail: "codex@example.test",
+			limits: [{ label: "7d", leftPercent: 61 }],
+			stale: false,
+		};
+		let text = "[codex@example.test] - 7d 61%";
+		const rendered: string[] = [];
+		// When each layout poll sees the width of the previously rendered text.
+		for (let tick = 0; tick < 6; tick += 1) {
+			status.width = text.length;
+			text = formatPromptStatusText({ quota, width: 120, glyphMode: "ascii", ...measureStatusSlot(status) });
+			rendered.push(text);
+		}
+		// Then fixed quota and footer width must not cycle full/quota-only/empty.
+		expect(rendered).toEqual(Array<string>(6).fill(expected));
+	});
+
 	it("budgets against the prompt row rather than the terminal", () => {
 		// A 114-wide row inside a 165-column terminal, less the 40 the model
 		// label beside this line owns.
