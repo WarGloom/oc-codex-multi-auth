@@ -4091,6 +4091,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 				fallbackOnUnsupportedCodexModel,
 				fallbackToGpt52OnUnsupportedGpt53,
 				customChain: unsupportedCodexFallbackChain,
+				autoFallbackConfig: pluginConfig,
 			});
 
 			if (fallbackModel) {
@@ -4614,6 +4615,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									isDefaultAutoFallbackModel(
 										model,
 										attemptedUnsupportedFallbackModels,
+										pluginConfig,
 									)
 								) {
 									const rejected = new Set<string>();
