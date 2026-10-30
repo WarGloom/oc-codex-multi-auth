@@ -1806,6 +1806,25 @@ describe('Fetch Helpers Module', () => {
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
 
+			it('leaves host instructions and input untouched in native mode when model identity is off', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+				const input = [{ type: 'message', role: 'user', content: 'Hello' }];
+				const requestBody = { model: 'gpt-6.1-terra', instructions: 'You are an OpenCode agent.', input };
+
+				const result = await transformRequestForCodex(
+					{ body: JSON.stringify(requestBody) },
+					'https://example.com',
+					{ global: {}, models: {} },
+					true,
+					undefined,
+					{ requestTransformMode: 'native', injectModelIdentity: false },
+				);
+
+				expect(result?.body.model).toBe('gpt-6.1-terra');
+				expect(result?.body.instructions).toBe('You are an OpenCode agent.');
+				expect(result?.body.input).toEqual(input);
+			});
+
 			it('enforces stateless invariants in native mode on canonical and wire bodies', async () => {
 				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
 				// store:true is a hostile override — the ChatGPT backend requires

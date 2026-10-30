@@ -79,10 +79,19 @@ export function normalizeModel(model: string | undefined): string {
 		return mappedModel;
 	}
 
-	// Fallback: Pattern-based matching for unknown/custom model names
-	// This preserves backwards compatibility with old verbose names
-	// like "GPT 5 Codex Low (ChatGPT Subscription)"
 	const normalized = modelId.toLowerCase();
+
+	// A selector in backend-slug form (`gpt-6.1-terra`, `gpt-6.1-terra-high`) that
+	// the map does not know is sent as written: the backend either serves that
+	// exact model or answers `model_not_found`. Rewriting it onto the nearest
+	// known model would silently serve a different one. An effort suffix on a
+	// known model still resolves through the map.
+	if (/^[a-z0-9][a-z0-9._-]*$/.test(normalized)) {
+		return getNormalizedModel(stripEffortSuffix(normalized)) ?? normalized;
+	}
+
+	// Fallback: Pattern-based matching for verbose display names
+	// like "GPT 5 Codex Low (ChatGPT Subscription)"
 
 	// Priority order for pattern matching (most specific first):
 	// 0. GPT-6 Astra and the Daybreak cyber tiers. These run first because they
@@ -624,6 +633,7 @@ export function getReasoningConfig(
 	const isGpt6Sol = canonicalModelName === GPT_6_SOL_MODEL_ID;
 	const isGpt6Luna = canonicalModelName === GPT_6_LUNA_MODEL_ID;
 	const isGpt61Sol = canonicalModelName === GPT_61_SOL_MODEL_ID;
+	// GPT-6.1 Terra's catalog entry carries the same low..ultra envelope.
 	const isGpt61Terra = canonicalModelName === GPT_61_TERRA_MODEL_ID;
 
 	/** Families whose whole effort range is low..max(+ultra) with no none/minimal. */
@@ -1227,6 +1237,7 @@ export async function transformRequestBody(
 	fastSession = false,
 	fastSessionStrategy: FastSessionStrategy = "hybrid",
 	fastSessionMaxInputItems = 30,
+	injectModelIdentity = true,
 ): Promise<RequestBody> {
 	const originalModel = body.model;
 	const normalizedModel = normalizeModel(body.model);
@@ -1281,10 +1292,9 @@ export async function transformRequestBody(
 	const transformedInstructions = shouldApplyFastSessionTuning
 		? compactInstructionsForFastSession(codexInstructions, isTrivialTurn)
 		: codexInstructions;
-	body.instructions = ensureInstructionIdentity(
-		transformedInstructions,
-		normalizedModel,
-	);
+	body.instructions = injectModelIdentity
+		? ensureInstructionIdentity(transformedInstructions, normalizedModel)
+		: transformedInstructions;
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key
 	// (OpenCode passes its session identifier). We no longer synthesize one here.

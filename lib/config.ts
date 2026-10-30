@@ -83,6 +83,7 @@ let modelAccountPoolMutationQueue: Promise<void> = Promise.resolve();
 const DEFAULT_CONFIG: PluginConfig = {
 	codexMode: true,
 	requestTransformMode: "native",
+	injectModelIdentity: true,
 	codexTuiV2: true,
 	codexTuiColorProfile: "truecolor",
 	codexTuiGlyphMode: "ascii",
@@ -823,6 +824,20 @@ export function getRequestTransformMode(pluginConfig: PluginConfig): "native" | 
 		pluginConfig.requestTransformMode,
 		"native",
 		REQUEST_TRANSFORM_MODES,
+	);
+}
+
+/**
+ * Whether requests carry the backend model identity: the "You are the model
+ * identified to the backend as <model>" line in `instructions` and, in native
+ * mode, the developer message naming the backend model ID. Off leaves the host's
+ * instructions and input exactly as sent.
+ */
+export function getInjectModelIdentity(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_INJECT_MODEL_IDENTITY",
+		pluginConfig.injectModelIdentity,
+		true,
 	);
 }
 

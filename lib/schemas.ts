@@ -26,6 +26,7 @@ export const MAX_CONFIG_DURATION_MS = 86_400_000;
 export const PluginConfigSchema = z.object({
 	codexMode: z.boolean().optional(),
 	requestTransformMode: z.enum(["native", "legacy"]).optional(),
+	injectModelIdentity: z.boolean().optional(),
 	codexTuiV2: z.boolean().optional(),
 	codexTuiColorProfile: z.enum(["truecolor", "ansi16", "ansi256"]).optional(),
 	codexTuiGlyphMode: z.enum(["ascii", "unicode", "auto"]).optional(),

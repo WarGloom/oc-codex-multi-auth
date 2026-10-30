@@ -35,19 +35,19 @@ describe("Edge Cases and Boundary Conditions", () => {
 
 		it("should handle very long model names", () => {
 			const longName = "openai/" + "gpt-5-codex-".repeat(10) + "high";
-			expect(normalizeModel(longName)).toBe("gpt-5-codex");
+			expect(normalizeModel(longName)).toBe(longName.slice("openai/".length));
 		});
 
 		it("should handle models with mixed separators", () => {
-			// Mixed separators may miss explicit 5.4/pro patterns and fall through to generic GPT-5 latest fallback.
-			expect(normalizeModel("gpt_5.4-high")).toBe("gpt-6-sol");
+			// An unknown slug-form id is sent as typed; a verbose name without a match keeps the default.
+			expect(normalizeModel("gpt_5.4-high")).toBe("gpt_5.4-high");
 			expect(normalizeModel("gpt-5_4 pro")).toBe("gpt-6-sol");
 			expect(normalizeModel("gpt-5.4-pro-high")).toBe("gpt-5.4-pro");
 		});
 
 		it("should handle models with numeric-only names", () => {
-			expect(normalizeModel("5.4")).toBe("gpt-6-sol");
-			expect(normalizeModel("5")).toBe("gpt-6-sol");
+			expect(normalizeModel("5.4")).toBe("5.4");
+			expect(normalizeModel("5")).toBe("5");
 		});
 
 		it("should handle models with unicode characters", () => {
