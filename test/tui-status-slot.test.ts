@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { measureStatusSlot, showsQuotaForSession } from "../tui.js";
+import { measureStatusSlot, showsQuotaForSession, withStatusPrefix } from "../tui.js";
 import { formatPromptStatusText, type CompactQuotaStatus } from "../lib/tui-status.js";
 
 /**
@@ -175,5 +175,18 @@ describe("showsQuotaForSession", () => {
 		expect(
 			showsQuotaForSession({ audience: "codex-models", providerID: undefined }),
 		).toBe(true);
+	});
+});
+
+describe("withStatusPrefix", () => {
+	it("names the provider on the first row and lines up the rest under it", () => {
+		expect(withStatusPrefix(["[a@b] 7d 24%", "5h 90%"], "OpenAI ")).toEqual([
+			"OpenAI [a@b] 7d 24%",
+			"       5h 90%",
+		]);
+	});
+
+	it("leaves the line unchanged without a prefix", () => {
+		expect(withStatusPrefix(["[a@b] 7d 24%"], "")).toEqual(["[a@b] 7d 24%"]);
 	});
 });

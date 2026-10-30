@@ -296,9 +296,13 @@ import {
 } from "./lib/codex-credits.js";
 import {
 	clearTuiQuotaSnapshot,
+	createTuiQuotaSnapshot,
 	parseTuiQuotaSnapshotFromHeaders,
+	writeSessionQuotaSnapshot,
 	writeTuiQuotaSnapshot,
 } from "./lib/tui-quota-cache.js";
+
+const TUI_SESSION_HEADER = "x-oc-codex-tui-session";
 
 /**
  * IPv6 loopback literal. WHATWG URL parsing compresses every equivalent
@@ -1014,9 +1018,10 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 			account: TuiQuotaAccount,
 			accountCount: number,
 			peerAccounts: readonly ({ accountUserId?: string } | undefined)[],
+			sessionID?: string,
 		): Promise<void> => {
 			try {
-				const snapshot = parseTuiQuotaSnapshotFromHeaders(response.headers, {
+				const identity = {
 					fingerprint: createUsageAccountFingerprint(account),
 					accountIndex: account.index + 1,
 					accountCount,
@@ -1024,7 +1029,13 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					accountLabel: formatAccountLabel(account, account.index, {
 						peerAccounts,
 					}),
-				});
+				};
+				const snapshot = parseTuiQuotaSnapshotFromHeaders(response.headers, identity);
+				if (sessionID && response.ok) {
+					await writeSessionQuotaSnapshot(sessionID, snapshot ?? createTuiQuotaSnapshot({
+						...identity, source: "headers", limits: [],
+					}));
+				}
 				if (!snapshot) return;
 				await writeTuiQuotaSnapshot(snapshot);
 			} catch (error) {
@@ -2448,6 +2459,12 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
         return {
                 event: eventHandler,
                 dispose: disposeRuntime,
+		"chat.headers": (input, output) => {
+			if (input.model.providerID === PROVIDER_ID) {
+				output.headers[TUI_SESSION_HEADER] = input.sessionID;
+			}
+			return Promise.resolve();
+		},
                 auth: {
 			provider: PROVIDER_ID,
 			/**
@@ -2834,7 +2851,11 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									return {};
 								};
 
-								const baseInit = await normalizeRequestInit(input, init);
+								const normalizedInit = await normalizeRequestInit(input, init);
+								const requestHeaders = new Headers(normalizedInit?.headers ?? (input instanceof Request ? input.headers : undefined));
+								const sessionID = requestHeaders.get(TUI_SESSION_HEADER) || undefined;
+								requestHeaders.delete(TUI_SESSION_HEADER);
+								const baseInit = sessionID ? { ...normalizedInit, headers: requestHeaders } : normalizedInit;
 								const originalBody = await parseRequestBodyFromInit(baseInit?.body);
 								const isStreaming = originalBody.stream === true;
 								const parsedBody =
@@ -3875,6 +3896,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									account,
 									accountCount,
 									accountManager.getAccountsSnapshot(),
+									sessionID,
 								);
 								return applyQuotaExhaustion(
 									accountManager,
