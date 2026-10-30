@@ -22,7 +22,7 @@ import {
 	DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN,
 } from "../request/fetch-helpers.js";
 import { getReasoningConfig } from "../request/request-transformer.js";
-import { readBoundedResponseText } from "../request/response-handler.js";
+import { convertSseToJson, readBoundedResponseText } from "../request/response-handler.js";
 import { shapeBodyForModel } from "../request/helpers/responses-lite.js";
 import { GPT_6_LUNA_MODEL_ID } from "../request/helpers/model-map.js";
 import { sanitizeCodexApiErrorMessage } from "../codex-usage.js";
@@ -146,7 +146,7 @@ export async function buildWarmRequestBody(model = WARM_MODEL): Promise<RequestB
 
 /**
  * Outcome of a warm request.
- * - `opened`: the request started/confirmed the usage window (2xx, or a 429
+ * - `opened`: the request started/confirmed the usage window (a completed response, or a 429
  *   whose reason is a transient token/concurrency limit — the window is ticking).
  * - `exhausted`: a 429 whose reason is quota/usage-limit — the account's window
  *   is already spent, so warming it is meaningless. Reported distinctly so the
@@ -196,7 +196,7 @@ async function attemptWarm(
 		params.timeoutMs ?? WARM_TIMEOUT_MS,
 	);
 	try {
-		const response = await doFetch(`${CODEX_BASE_URL}/codex/responses`, {
+		let response = await doFetch(`${CODEX_BASE_URL}/codex/responses`, {
 			method: "POST",
 			headers,
 			// A fallback target may be a responses-lite model, which takes a
@@ -206,13 +206,21 @@ async function attemptWarm(
 		});
 
 		if (response.ok) {
-			// Drain/cancel the SSE stream — we only needed to start the window.
-			try {
-				await response.body?.cancel();
-			} catch {
-				// Ignore cancellation failures.
+			// HTTP 200 only confirms stream acceptance. Authentication/quota
+			// failures can arrive later as SSE events; wait for a terminal result.
+			response = await convertSseToJson(response, new Headers(response.headers), {
+				streamStallTimeoutMs: params.timeoutMs ?? WARM_TIMEOUT_MS,
+				maxStreamDurationMs: params.timeoutMs ?? WARM_TIMEOUT_MS,
+			});
+			if (response.ok) {
+				const result: unknown = await response.json();
+				if (!result || typeof result !== "object" ||
+					!("status" in result) || result.status !== "completed" ||
+					("error" in result && result.error)) {
+					throw new Error("Warm request failed: no completed response received");
+				}
+				return { kind: "opened" };
 			}
-			return { kind: "opened" };
 		}
 
 		// Read the error body (small) BEFORE classifying so a 429 quota-exhausted
@@ -271,7 +279,7 @@ async function attemptWarm(
  * Send a warm request to open the account's usage window.
  *
  * Resolves with `{ status: "opened" }` when the upstream started/confirmed the
- * window (2xx, or a non-quota 429 meaning the window is already active), or
+ * window (a completed response, or a non-quota 429 meaning the window is already active), or
  * `{ status: "exhausted" }` for a quota/usage-limit 429 (window already spent).
  * Any other non-2xx, or a network/timeout error, throws so the caller records
  * the account as failed.

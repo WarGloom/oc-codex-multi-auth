@@ -386,7 +386,7 @@ describe("codex-doctor tool — fix flow", () => {
 			reloginNeeded: [1],
 			appliedFixes: [],
 			fixErrors: [
-				"Account 1: refresh verification or credential persistence failed — run `opencode auth login` to re-authenticate.",
+				"Account 1: refresh verification or credential persistence failed. An existing access token may still work until expiry; `warm` does not verify token renewal. Retry; if the failure persists, run `opencode auth login` to re-authenticate.",
 			],
 		});
 		const { ctx } = buildCtx();
