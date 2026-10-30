@@ -1038,6 +1038,8 @@ export async function transformRequestForCodex(
 		fastSession?: boolean;
 		fastSessionStrategy?: "hybrid" | "always";
 		fastSessionMaxInputItems?: number;
+		/** Inject the backend model identity line/message (default true). */
+		injectModelIdentity?: boolean;
 	},
 ): Promise<
 	| {
@@ -1093,11 +1095,10 @@ export async function transformRequestForCodex(
 
 			const normalizedModel = normalizeModel(originalModel);
 			body.model = normalizedModel;
-			body.instructions = ensureInstructionIdentity(
-				body.instructions,
-				normalizedModel,
-			);
-			body.input = upsertBackendModelIdentityMessage(body.input, normalizedModel);
+			if (options?.injectModelIdentity !== false) {
+				body.instructions = ensureInstructionIdentity(body.instructions, normalizedModel);
+				body.input = upsertBackendModelIdentityMessage(body.input, normalizedModel);
+			}
 			// Native mode keeps the host's effort but still applies the
 			// family clamps legacy mode does: `ultra` is a client-side tier
 			// sent as `max`, and `none`/`max`/`xhigh` step to what the
@@ -1179,6 +1180,7 @@ export async function transformRequestForCodex(
 			options?.fastSession ?? false,
 			options?.fastSessionStrategy ?? "hybrid",
 			options?.fastSessionMaxInputItems ?? 30,
+			options?.injectModelIdentity !== false,
 		);
 		applyServiceTier(transformedBody, requestedServiceTier);
 

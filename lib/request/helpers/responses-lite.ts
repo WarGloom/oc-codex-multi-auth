@@ -73,6 +73,7 @@ const RESPONSES_LITE_MODELS: ReadonlySet<string> = new Set([
 	// PR #49318), alongside `tool_mode: "code_mode_only"` and
 	// `multi_agent_version: "v2"`.
 	GPT_61_SOL_MODEL_ID,
+	// Same catalog flags as GPT-6.1 Sol (openai/codex 126a0ee9, PR #57293).
 	GPT_61_TERRA_MODEL_ID,
 ]);
 

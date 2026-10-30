@@ -376,6 +376,8 @@ const CATALOG_SLUGS: ReadonlySet<string> = new Set([
 	// Until a tag ships it, `base_instructions`-less slug misses fall back to
 	// the prompt file, exactly like the Sol/Luna window above.
 	"gpt-6.1-sol",
+	// Added 2026-10-26 (openai/codex 126a0ee9, PR #57293); first tagged in
+	// rust-v0.165.0.
 	"gpt-6.1-terra",
 ]);
 
@@ -585,8 +587,9 @@ export function getModelFamily(normalizedModel: string): ModelFamily {
 		return "gpt-5.6-cyber";
 	}
 	// GPT-6.1 must precede the bare `gpt-6` branch: the `.` after `6` is a word
-	// boundary, so `gpt-6.1-*` would otherwise be claimed for Astra. Terra
-	// keeps its own family; a bare `gpt-6.1` selector joins Sol.
+	// boundary, so `gpt-6.1-*` would otherwise be claimed for Astra and share
+	// its rotation state. Terra keeps its own family; a bare `gpt-6.1` selector
+	// joins Sol, the model OpenAI's `gpt-6.1` alias resolves to.
 	if (/\bgpt(?:-| )6\.1(?:-| )terra(?:\b|[- ])/i.test(normalizedModel)) {
 		return "gpt-6.1-terra";
 	}

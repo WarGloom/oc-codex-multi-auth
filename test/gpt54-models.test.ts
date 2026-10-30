@@ -336,14 +336,13 @@ describe("GPT-5.4 Model Support", () => {
 		});
 
 		it("should handle gpt-5.4 with underscore separator", () => {
-			// Underscore separator not explicitly supported, falls back to default
-			expect(normalizeModel("gpt_5_4")).toBe("gpt-6-sol");
+			// Not a known id: sent as typed so the backend reports it, never rewritten.
+			expect(normalizeModel("gpt_5_4")).toBe("gpt_5_4");
 		});
 
-		it("should route gpt-5.4x patterns through generic GPT-5 fallback to the latest GPT-5 model", () => {
-			// Boundary-aware matching prevents accidental 5.4 family match, then generic GPT-5 fallback applies.
-			expect(normalizeModel("gpt-5.40")).toBe("gpt-6-sol");
-			expect(normalizeModel("gpt-5.44")).toBe("gpt-6-sol");
+		it("does not rewrite unknown gpt-5.4x ids onto another model", () => {
+			expect(normalizeModel("gpt-5.40")).toBe("gpt-5.40");
+			expect(normalizeModel("gpt-5.44")).toBe("gpt-5.44");
 		});
 
 		it("should handle empty/undefined model names defaulting to gpt-6-sol", () => {
@@ -355,7 +354,7 @@ describe("GPT-5.4 Model Support", () => {
 	describe("GPT-5.4 vs Other Models Priority", () => {
 		it("should prioritize gpt-5.4 over gpt-5.3/gpt-5.2 in pattern matching", () => {
 			expect(normalizeModel("gpt-5.4")).toBe("gpt-5.4");
-			expect(normalizeModel("gpt-5.3")).toBe("gpt-6-sol");
+			expect(normalizeModel("gpt-5.3")).toBe("gpt-5.3");
 			expect(normalizeModel("gpt-5.2")).toBe("gpt-5.2");
 		});
 

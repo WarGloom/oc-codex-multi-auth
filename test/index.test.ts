@@ -149,6 +149,7 @@ vi.mock("../lib/cli.js", () => ({
 vi.mock("../lib/config.js", () => ({
 	getCodexMode: () => true,
 	getRequestTransformMode: () => "native",
+	getInjectModelIdentity: () => true,
 	getFastSession: () => false,
 	getFastSessionStrategy: () => "hybrid",
 	getFastSessionMaxInputItems: () => 30,

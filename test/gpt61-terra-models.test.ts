@@ -154,3 +154,14 @@ describe("GPT-6.1 Terra Model Support", () => {
 		}
 	});
 });
+
+describe("unknown slug-form models", () => {
+	it("are sent as typed instead of being rewritten onto a known model", () => {
+		expect(normalizeModel("gpt-6.1-nonexistent")).toBe("gpt-6.1-nonexistent");
+		expect(normalizeModel("openai/gpt-7-sol")).toBe("gpt-7-sol");
+	});
+
+	it("still resolve an effort suffix on a known model through the map", () => {
+		expect(normalizeModel(`${SOL61}-xhigh`)).toBe(SOL61);
+	});
+});
