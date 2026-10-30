@@ -917,6 +917,8 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(output.fixApplied).toBe(true);
 		expect(output.fixErrors).toEqual([expect.stringContaining("Account 2")]);
+		expect(output.fixErrors[0]).toContain("access token may still work until expiry");
+		expect(output.fixErrors[0]).toContain("`warm` does not verify token renewal");
 		expect(JSON.stringify(output)).not.toMatch(/failed-refresh-secret|at-warm|upstream-access-secret|rotated-access-secret|rotated-refresh-secret|disabled-refresh-secret/);
 	});
 
@@ -966,7 +968,9 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		vi.stubEnv("HOME", tempHome);
 		vi.stubEnv("USERPROFILE", tempHome);
 		await writeAccounts(tempHome, [freshAccount({ quotaExhaustedUntil: 1234, rateLimitResetTimes: { codex: 5678 } })]);
-		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ rate_limit: {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(String(url).includes("/codex/responses")
+			? 'data: {"type":"response.completed","response":{"id":"resp_warm","status":"completed","output":[]}}\n\n'
+			: JSON.stringify({ rate_limit: {
 			primary_window: { used_percent: 10, limit_window_seconds: 18_000 },
 			secondary_window: { used_percent: 20, limit_window_seconds: 604_800 },
 		} })));
@@ -993,7 +997,7 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		storageMod.setStoragePathDirect(null);
 	});
 
-	it("warm: opens the window for an enabled account when upstream returns 200", async () => {
+	it.each(["completed", "failed"])("warm: reports HTTP 200 SSE %s accurately", async (status) => {
 		vi.resetModules();
 		tempHome = await createTempHome();
 		vi.stubEnv("HOME", tempHome);
@@ -1001,12 +1005,12 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 		await writeAccounts(tempHome, [freshAccount()]);
 		const fetchSpy = vi
 			.spyOn(globalThis, "fetch")
-			.mockResolvedValue({
-				ok: true,
-				status: 200,
-				body: { cancel: async () => undefined },
-				text: async () => "",
-			} as unknown as Response);
+			.mockImplementation(async () => new Response(`data: ${JSON.stringify({
+				type: `response.${status}`,
+				response: { id: "resp_warm", status, output: [], ...(status === "failed"
+					? { error: { code: "invalid_api_key", message: "Access rejected" } }
+					: {}) },
+			})}\n\n`, { headers: { "content-type": "text/event-stream" } }));
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
 
@@ -1014,11 +1018,11 @@ describe("standalone oc-codex-multi-auth CLI commands", () => {
 			runInstaller(["warm", "--json"], {
 				env: { ...process.env, HOME: tempHome, USERPROFILE: tempHome },
 			}),
-		).resolves.toMatchObject({ action: "warm", exitCode: 0 });
+		).resolves.toMatchObject({ action: "warm", exitCode: status === "completed" ? 0 : 1 });
 
 		const output = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
-		expect(output).toMatchObject({ totalAccounts: 1, warmed: 1, failed: 0, skipped: 0 });
-		expect(output.results[0]).toMatchObject({ index: 0, status: "warmed" });
+		expect(output).toMatchObject({ totalAccounts: 1, warmed: status === "completed" ? 1 : 0, failed: status === "completed" ? 0 : 1, skipped: 0 });
+		expect(output.results[0]).toMatchObject({ index: 0, status: status === "completed" ? "warmed" : "failed" });
 		// Hit the real /codex/responses endpoint, not a usage GET.
 		expect(String(fetchSpy.mock.calls.at(-1)?.[0])).toContain("/codex/responses");
 		expect(fetchSpy.mock.calls.at(-1)?.[1]).toMatchObject({ method: "POST" });

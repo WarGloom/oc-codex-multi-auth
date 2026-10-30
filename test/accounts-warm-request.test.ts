@@ -18,12 +18,9 @@ import { getReasoningConfig } from "../lib/request/request-transformer.js";
 import { CODEX_BASE_URL } from "../lib/constants.js";
 
 function fakeResponse(status: number, bodyText = ""): Response {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		body: { cancel: vi.fn(async () => undefined) },
-		text: vi.fn(async () => bodyText),
-	} as unknown as Response;
+	return new Response(bodyText || (status === 200
+		? 'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n'
+		: ""), { status });
 }
 
 const PARAMS = {
@@ -183,14 +180,32 @@ describe("warmAccountWindow (#182)", () => {
 		await expect(warmAccountWindow({ ...PARAMS, fetchImpl })).rejects.toThrow(/HTTP 500/);
 	});
 
-	it("cancels the SSE stream body on success", async () => {
-		const cancel = vi.fn(async () => undefined);
-		const fetchImpl = vi.fn(
-			async () =>
-				({ ok: true, status: 200, body: { cancel } }) as unknown as Response,
-		);
-		await warmAccountWindow({ ...PARAMS, fetchImpl });
+	it("cancels the remaining stream after a completed response", async () => {
+		const cancel = vi.fn();
+		const response = new Response(new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(
+					'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+				));
+			},
+			cancel,
+		}));
+		await warmAccountWindow({ ...PARAMS, fetchImpl: vi.fn(async () => response) });
 		expect(cancel).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		'data: {"type":"error","error":{"message":"account unavailable"}}\n\n',
+		'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"account unavailable"}}}\n\n',
+		'data: {"type":"response.incomplete","response":{"status":"incomplete"}}\n\n',
+		'data: {"type":"response.created","response":{"status":"in_progress"}}\n\n',
+		'',
+		'{"status":"failed"}',
+		'{"rate_limit":{}}',
+	])("rejects HTTP 200 without successful completion: %s", async (body) => {
+		await expect(warmAccountWindow({
+			...PARAMS, fetchImpl: vi.fn(async () => new Response(body)),
+		})).rejects.toThrow();
 	});
 
 	it("propagates a network error from fetch", async () => {

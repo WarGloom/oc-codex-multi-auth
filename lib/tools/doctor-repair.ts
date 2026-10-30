@@ -40,7 +40,7 @@ export async function repairDoctorAccounts(accounts: AccountMetadataV3[]) {
 				verificationFailureIdentities.push(outcome.identity);
 				reloginNeeded.push(outcome.index + 1);
 				// Upstream errors can echo arbitrary credential material, even without token labels.
-				fixErrors.push(`Account ${outcome.index + 1}: refresh verification or credential persistence failed — run \`opencode auth login\` to re-authenticate.`);
+				fixErrors.push(`Account ${outcome.index + 1}: refresh verification or credential persistence failed. An existing access token may still work until expiry; \`warm\` does not verify token renewal. Retry; if the failure persists, run \`opencode auth login\` to re-authenticate.`);
 				break;
 			default: {
 				const exhaustive: never = outcome;
