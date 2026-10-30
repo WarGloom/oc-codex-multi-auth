@@ -22,6 +22,7 @@ import {
 	getFallbackToGpt52OnUnsupportedGpt53,
 	getUnsupportedCodexFallbackChain,
 	getRequestTransformMode,
+	getInjectModelIdentity,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
 	getMaxStreamDurationMs,
@@ -116,6 +117,7 @@ describe('Plugin Configuration', () => {
 			expect(config).toEqual({
 				codexMode: true,
 				requestTransformMode: 'native',
+				injectModelIdentity: true,
 				codexTuiV2: true,
 				codexTuiColorProfile: 'truecolor',
 				codexTuiGlyphMode: 'ascii',
@@ -173,6 +175,7 @@ describe('Plugin Configuration', () => {
 			expect(config).toEqual({
 				codexMode: false,
 				requestTransformMode: 'native',
+				injectModelIdentity: true,
 				codexTuiV2: true,
 				codexTuiColorProfile: 'truecolor',
 				codexTuiGlyphMode: 'ascii',
@@ -223,6 +226,7 @@ describe('Plugin Configuration', () => {
 			expect(config).toEqual({
 				codexMode: true,
 				requestTransformMode: 'native',
+				injectModelIdentity: true,
 				codexTuiV2: true,
 				codexTuiColorProfile: 'truecolor',
 				codexTuiGlyphMode: 'ascii',
@@ -284,6 +288,7 @@ describe('Plugin Configuration', () => {
 	expect(config).toEqual({
 		codexMode: true,
 		requestTransformMode: 'native',
+		injectModelIdentity: true,
 		codexTuiV2: true,
 		codexTuiColorProfile: 'truecolor',
 		codexTuiGlyphMode: 'ascii',
@@ -339,6 +344,7 @@ describe('Plugin Configuration', () => {
 		expect(config).toEqual({
 			codexMode: true,
 			requestTransformMode: 'native',
+			injectModelIdentity: true,
 			codexTuiV2: true,
 			codexTuiColorProfile: 'truecolor',
 			codexTuiGlyphMode: 'ascii',
@@ -832,6 +838,17 @@ describe('Plugin Configuration', () => {
 			expect(getFastSessionStrategy({ fastSessionStrategy: 'hybrid' })).toBe('always');
 			process.env.CODEX_AUTH_FAST_SESSION_STRATEGY = 'hybrid';
 			expect(getFastSessionStrategy({ fastSessionStrategy: 'always' })).toBe('hybrid');
+		});
+	});
+
+	describe('getInjectModelIdentity', () => {
+		it('defaults to on, reads config, and lets the env var override it', () => {
+			delete process.env.CODEX_AUTH_INJECT_MODEL_IDENTITY;
+			expect(getInjectModelIdentity({})).toBe(true);
+			expect(getInjectModelIdentity({ injectModelIdentity: false })).toBe(false);
+			process.env.CODEX_AUTH_INJECT_MODEL_IDENTITY = '0';
+			expect(getInjectModelIdentity({ injectModelIdentity: true })).toBe(false);
+			delete process.env.CODEX_AUTH_INJECT_MODEL_IDENTITY;
 		});
 	});
 

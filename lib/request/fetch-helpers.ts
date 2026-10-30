@@ -994,6 +994,8 @@ export async function transformRequestForCodex(
 		fastSession?: boolean;
 		fastSessionStrategy?: "hybrid" | "always";
 		fastSessionMaxInputItems?: number;
+		/** Inject the backend model identity line/message (default true). */
+		injectModelIdentity?: boolean;
 	},
 ): Promise<{ body: RequestBody; updatedInit: RequestInit } | undefined> {
 	const hasParsedBody =
@@ -1040,11 +1042,13 @@ export async function transformRequestForCodex(
 
 			const normalizedModel = normalizeModel(originalModel);
 			body.model = normalizedModel;
-			body.instructions = ensureInstructionIdentity(
-				body.instructions,
-				normalizedModel,
-			);
-			body.input = upsertBackendModelIdentityMessage(body.input, normalizedModel);
+			if (options?.injectModelIdentity !== false) {
+				body.instructions = ensureInstructionIdentity(
+					body.instructions,
+					normalizedModel,
+				);
+				body.input = upsertBackendModelIdentityMessage(body.input, normalizedModel);
+			}
 
 			// Native mode is a lighter transform, not a passthrough: the
 			// stateless/privacy invariants apply on EVERY Codex-bound request.
@@ -1109,6 +1113,7 @@ export async function transformRequestForCodex(
 			options?.fastSession ?? false,
 			options?.fastSessionStrategy ?? "hybrid",
 			options?.fastSessionMaxInputItems ?? 30,
+			options?.injectModelIdentity !== false,
 		);
 
 		// Log transformed request

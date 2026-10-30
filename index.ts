@@ -70,6 +70,7 @@ import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
 import {
 	getCodexMode,
 	getRequestTransformMode,
+	getInjectModelIdentity,
 	getFastSession,
 	getFastSessionStrategy,
 	getFastSessionMaxInputItems,
@@ -2716,6 +2717,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						}
 							const codexMode = getCodexMode(pluginConfig);
 							const requestTransformMode = getRequestTransformMode(pluginConfig);
+							const injectModelIdentity = getInjectModelIdentity(pluginConfig);
 							const fastSessionEnabled = getFastSession(pluginConfig);
 							const fastSessionStrategy = getFastSessionStrategy(pluginConfig);
 							const fastSessionMaxInputItems = getFastSessionMaxInputItems(pluginConfig);
@@ -2849,6 +2851,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									fastSessionStrategy,
 									fastSessionMaxInputItems,
 									requestTransformMode,
+									injectModelIdentity,
 								},
 							);
 										let requestInit = transformation?.updatedInit ?? baseInit;
@@ -3056,10 +3059,10 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 								// serving model. `getCodexInstructions` only rewrites an
 								// existing Codex identity line, so a fallback-served prompt
 								// without one would silently drop it.
-								const fallbackInstructions = ensureInstructionIdentity(
-									await getCodexInstructions(model),
-									model,
-								);
+								const servedInstructions = await getCodexInstructions(model);
+								const fallbackInstructions = injectModelIdentity
+									? ensureInstructionIdentity(servedInstructions, model)
+									: servedInstructions;
 
 								if (transformedBody && typeof transformedBody === "object") {
 									transformedBody = {

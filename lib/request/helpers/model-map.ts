@@ -61,6 +61,17 @@ export const GPT_6_LUNA_MODEL_ID = "gpt-6-luna" as const;
 export const GPT_61_SOL_MODEL_ID = "gpt-6.1-sol" as const;
 
 /**
+ * GPT-6.1 Terra, "a fast, efficient model for clear writing, visual
+ * understanding, and computer use", added to the Codex model catalog on
+ * 2026-10-26 (openai/codex 126a0ee9, PR #57293) and shipped in rust-v0.165.0.
+ * Its catalog entry mirrors GPT-6.1 Sol's request shape:
+ * `use_responses_lite: true`, `tool_mode: "code_mode_only"`,
+ * `multi_agent_version: "v2"`, efforts low..ultra, `minimal_client_version`
+ * 0.153.0. It is a distinct backend model, never an alias of Sol.
+ */
+export const GPT_61_TERRA_MODEL_ID = "gpt-6.1-terra" as const;
+
+/**
  * Daybreak cyber tiers, verified in the Codex model catalog
  * (openai/codex `codex-rs/models-manager/models.json`, rust-v0.153.0+):
  * `gpt-daybreak-blue-latest` (`model_specialty: cyber`, defensive) and
@@ -200,8 +211,12 @@ export const MODEL_MAP: Record<string, string> = {
 	// `minimal` is accepted.
 	// ============================================================================
 	...expandEffortAliases(GPT_61_SOL_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
-	// Bare `gpt-6.1` mirrors `gpt-5.6` -> Sol: Sol is the only shipping 6.1.
+	// Bare `gpt-6.1` mirrors `gpt-5.6` -> Sol, matching OpenAI's `gpt-6.1` alias.
 	"gpt-6.1": GPT_61_SOL_MODEL_ID,
+
+	// GPT-6.1 Terra (added to the Codex catalog 2026-10-26). Efforts per the
+	// catalog: low..ultra, the same envelope as GPT-6.1 Sol.
+	...expandEffortAliases(GPT_61_TERRA_MODEL_ID, LOW_TO_ULTRA_EFFORT_SUFFIXES),
 
 	// ============================================================================
 	// Cyber tiers (Daybreak-gated)
