@@ -40,7 +40,7 @@ describe("V2 accounts UI", () => {
 		const context = {
 			location: { directory: "/tmp/opencode/project" }, renderer: { width: 100 },
 			client: { rpc: () => ({ status }) }, theme: { text: { base: "white" } },
-			data: { session: { get: () => ({ model: { providerID: configuredProvider } }), message: { list: () => messages } } },
+			data: { session: { family: () => ["test"], get: () => ({ model: { providerID: configuredProvider } }), message: { list: () => messages } } },
 			keymap: { layer: (factory: () => { commands: typeof commands }) => commands.push(...factory().commands) },
 			ui: { dialog: { alert }, slot: (claim: { append: string; render: (props: object) => { children: string } | null }) => {
 				slots.set(claim.append, claim);
@@ -93,6 +93,41 @@ describe("V2 accounts UI", () => {
 		expect(status).toHaveBeenCalledTimes(calls);
 		dispose();
 		expect(unregister).toHaveBeenCalledTimes(3);
+	});
+
+	it("shows quota for an OpenAI family member and preserves always mode", async () => {
+		vi.useFakeTimers();
+		const slots = new Map<string, { render: (props: object) => { children: string } | null }>();
+		const status = vi.fn().mockResolvedValue({ text: "quota ready", details: "", showFor: "codex-models", accountStorage: "global", accounts: [] });
+		const sessions = new Map([
+			["parent", { model: { providerID: "anthropic" } }],
+			["child", { model: { providerID: "openai" } }],
+		]);
+		const messages = new Map<string, Array<{ type: string; model?: { providerID: string } }>>();
+		const context = {
+			location: { directory: "/tmp/opencode/project" }, renderer: { width: 100 },
+			client: { rpc: () => ({ status }) }, theme: { text: { base: "white" } },
+			data: { session: { family: () => ["parent", "child"], get: (id: string) => sessions.get(id), message: { list: (id: string) => messages.get(id) ?? [] } } },
+			keymap: { layer: () => {} },
+			ui: { slot: (claim: { append: string; render: (props: object) => { children: string } | null }) => { slots.set(claim.append, claim); return vi.fn(); } },
+		} as unknown as Plugin.Context;
+		setupV2Tui(context);
+		slots.get("app")!.render({});
+		await vi.advanceTimersByTimeAsync(0);
+		const footer = slots.get("prompt.footer.status")!.render({ sessionID: "parent" })!;
+		expect(footer.children).toBe("quota ready");
+		messages.set("child", [{ type: "assistant", model: { providerID: "anthropic" } }]);
+		expect(footer.children).toBe("");
+		sessions.set("parent", { model: { providerID: "openai" } });
+		expect(slots.get("prompt.footer.status")!.render({ sessionID: "child" })!.children).toBe("quota ready");
+		sessions.set("parent", { model: { providerID: "anthropic" } });
+		messages.set("child", [{ type: "assistant", model: { providerID: "openai" } }, { type: "user" }]);
+		sessions.set("child", { model: { providerID: "anthropic" } });
+		expect(footer.children).toBe("quota ready");
+		messages.set("child", [{ type: "assistant", model: { providerID: "anthropic" } }]);
+		status.mockResolvedValue({ text: "quota ready", details: "", showFor: "always", accountStorage: "global", accounts: [] });
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(footer.children).toBe("quota ready");
 	});
 
 	it("removes stored OpenAI OAuth connections on codex.logout, keeping the pool", async () => {
