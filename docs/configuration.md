@@ -307,7 +307,7 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `quotaStatus.resetsMinUsedPercent` | (file only) | number | `100` | 0–100 | minimum pool weighted usage before the `resets` and `credits` screens show |
 | `quotaStatus.accounts` | (file only) | boolean | — | — | legacy spelling; `false` behaves as `layout: "count"` |
 | `quotaStatus.rows` | (file only) | integer | `1` | 1–4 | row ceiling for the line — a ceiling, not a height |
-| `quotaStatus.showFor` | (file only) | `always` \| `codex-models` | `always` | — | `codex-models` hides the line unless the session runs a model this plugin routes |
+| `quotaStatus.showFor` | (file only) | `always` \| `codex-models` | `always` | — | `codex-models` limits the line to routed models; V2 checks the session family |
 | `quotaStatus.prefix` | (file only) | string | `""` | 0–40 characters | text before the first row (for example `"OpenAI "`); later rows indent under it. Its columns come out of the line's width budget, and the line hides when none are left. Terminal control characters are stripped. OpenCode V1 and V2 |
 
 #### `quotaNotifications` object
@@ -653,8 +653,10 @@ allotment first, then badges and reset credits, then countdowns, then names,
 then the per-account breakdown, and finally the pool total alone.
 
 `showFor` is `always` by default — the line shows whenever accounts are
-configured. `codex-models` shows it only while the session runs a model this
-plugin routes; a session that has not run anything yet still shows the line.
+configured. In V2, `codex-models` shows it when a session in the shown
+session's family has an OpenAI latest assistant reply, or uses an OpenAI model
+and has no assistant reply. In V1, it uses the shown session's model.
+V2 checks only cached family sessions; an uncached descendant is not considered.
 
 #### Where the numbers come from
 
