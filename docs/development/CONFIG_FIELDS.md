@@ -146,7 +146,7 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `resetsMinUsedPercent` | (file only) | number | `100` | 0–100 | minimum pool weighted usage before the `resets` and `credits` screens show |
 | `accounts` | (file only) | boolean | — | — | legacy spelling; `false` = `layout: "count"` |
 | `rows` | (file only) | integer | `1` | 1–4 | row ceiling, not a height |
-| `showFor` | (file only) | `always` \| `codex-models` | `always` | — | `codex-models` hides the line unless the session runs a routed model |
+| `showFor` | (file only) | `always` \| `codex-models` | `always` | — | `codex-models` limits the line to routed models; V2 checks the session family |
 | `prefix` | (file only) | string | `""` | 0–40 characters | text before the first row; later rows indent under it. Spent from the line's width budget (hidden when none is left); control characters stripped (V1 and V2) |
 
 ### `quotaNotifications` object
