@@ -5374,6 +5374,8 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		};
 
 		expect(response.status).toBe(503);
+		expect(response.headers.get("retry-after")).toBeNull();
+		expect(response.headers.get("retry-after-ms")).toBeNull();
 		expect(body.error).toMatchObject({
 			code: "strict_pool_unavailable",
 		});
@@ -5384,6 +5386,55 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			routingVisibility: { accountPoolMode: string | null };
 		}>(await plugin.tool["codex-metrics"].execute({ format: "json" }));
 		expect(metrics.routingVisibility.accountPoolMode).toBe("strict-unavailable");
+	});
+
+	it.each([
+		{ strict: true, wait: 5001, seconds: "6", code: "strict_pool_unavailable" },
+		{ strict: false, wait: 5001, seconds: "6", code: "all_accounts_rate_limited" },
+		{ strict: true, wait: 1, seconds: "1", code: "strict_pool_unavailable" },
+		{ strict: false, wait: 1, seconds: "1", code: "all_accounts_rate_limited" },
+		{ strict: true, wait: 30_000, seconds: "30", code: "strict_pool_unavailable" },
+		{ strict: false, wait: 30_000, seconds: "30", code: "all_accounts_rate_limited" },
+	])("returns retry headers when a pool is cooling down ($strict, $wait ms)", async ({ strict, wait, seconds, code }) => {
+		const config = await import("../lib/config.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: false });
+		if (strict) {
+			vi.mocked(config.getModelAccountPool).mockReturnValue(["acc-1"]);
+			vi.mocked(config.getModelAccountPoolMode).mockReturnValue("strict");
+		}
+		vi.spyOn(AccountManager.prototype, "getAccountForStrategy").mockReturnValue(null);
+		vi.spyOn(AccountManager.prototype, "getMinWaitTimeForFamily").mockReturnValue(wait);
+		const { sdk } = await setupPlugin();
+		if (!sdk.fetch) throw new Error("Missing plugin fetch");
+		const response = await sdk.fetch("https://api.openai.com/v1/chat", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		expect(response.status).toBe(429);
+		expect(response.headers.get("retry-after")).toBe(seconds);
+		expect(response.headers.get("retry-after-ms")).toBe(String(wait));
+		expect(await response.json()).toMatchObject({ error: { code } });
+	});
+
+	it.each([true, false])("omits retry headers for long pool waits (strict: %s)", async (strict) => {
+		const config = await import("../lib/config.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: false });
+		if (strict) {
+			vi.mocked(config.getModelAccountPool).mockReturnValue(["acc-1"]);
+			vi.mocked(config.getModelAccountPoolMode).mockReturnValue("strict");
+		}
+		vi.spyOn(AccountManager.prototype, "getAccountForStrategy").mockReturnValue(null);
+		vi.spyOn(AccountManager.prototype, "getMinWaitTimeForFamily").mockReturnValue(6 * 60 * 60 * 1000);
+		const { sdk } = await setupPlugin();
+		if (!sdk.fetch) throw new Error("Missing plugin fetch");
+		const response = await sdk.fetch("https://api.openai.com/v1/chat", {
+			method: "POST", body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+		expect(response.status).toBe(429);
+		expect(response.headers.get("retry-after")).toBeNull();
+		expect(response.headers.get("retry-after-ms")).toBeNull();
+		expect(await response.json()).toMatchObject({ error: { code: strict ? "strict_pool_unavailable" : "all_accounts_rate_limited" } });
 	});
 
 	it("does not record TUI quota cache from a non-authoritative error response", async () => {

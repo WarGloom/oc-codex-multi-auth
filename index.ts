@@ -307,6 +307,7 @@ import {
 } from "./lib/tui-quota-cache.js";
 
 const TUI_SESSION_HEADER = "x-oc-codex-tui-session";
+const MAX_ADVERTISED_RETRY_AFTER_MS = 30_000;
 
 /**
  * IPv6 loopback literal. WHATWG URL parsing compresses every equivalent
@@ -4561,6 +4562,10 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									status: poolWaitMs > 0 ? 429 : 503,
 									headers: {
 										"content-type": "application/json; charset=utf-8",
+										...(poolWaitMs > 0 && poolWaitMs <= MAX_ADVERTISED_RETRY_AFTER_MS ? {
+											"retry-after": String(Math.max(1, Math.ceil(poolWaitMs / 1000))),
+											"retry-after-ms": String(Math.ceil(poolWaitMs)),
+										} : {}),
 									},
 								},
 							);
@@ -4768,6 +4773,10 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 										status: waitMs > 0 && !allDisabled ? 429 : 503,
 											headers: {
 												"content-type": "application/json; charset=utf-8",
+												...(waitMs > 0 && waitMs <= MAX_ADVERTISED_RETRY_AFTER_MS && !allDisabled ? {
+													"retry-after": String(Math.max(1, Math.ceil(waitMs / 1000))),
+													"retry-after-ms": String(Math.ceil(waitMs)),
+												} : {}),
 											},
 										});
 									}
