@@ -530,6 +530,10 @@ vi.mock("../lib/accounts.js", () => {
 			return this.accounts.length;
 		}
 
+		getAccountAt(index: number) {
+			return this.accounts[index] ?? null;
+		}
+
 		private selectableAccounts(excludedIndices?: ReadonlySet<number>) {
 			return this.accounts.filter(
 				(account) =>
@@ -5394,6 +5398,126 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			});
 		});
 
+		describe("account exclusion diagnostics", () => {
+			beforeEach(async () => {
+				const config = await import("../lib/config.js");
+				vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: false });
+			});
+
+			afterEach(async () => {
+				const { resetTrackers } = await import("../lib/rotation.js");
+				resetTrackers();
+			});
+
+			it("retains mixed decision reasons in the normal quota failure without private fields", async () => {
+				const { AccountState } = await import("../lib/accounts/state.js");
+				const { getTokenTracker, resetTrackers } = await import("../lib/rotation.js");
+				resetTrackers();
+				const now = Date.now();
+				const state = new AccountState();
+				state.initializeFromStorage(undefined, {
+					version: 3, activeIndex: 0,
+					accounts: Array.from({ length: 4 }, (_, index) => ({
+						refreshToken: `FAKE_DIAGNOSTIC_REFRESH_${index}`, addedAt: 1, lastUsed: 1,
+						...(index === 0 ? { quotaExhaustedUntil: now + 60_000 } : {}),
+						...(index === 1 ? { rateLimitResetTimes: { "gpt-5.1": now + 5001 } } : {}),
+						...(index === 2 ? { coolingDownUntil: now + 5001, cooldownReason: "network-error" as const } : {}),
+					})),
+				});
+				getTokenTracker().drain(3, "gpt-5.1:gpt-5.1", 50);
+				const seats = [0, 1, 2, 3].map((index) => exhausted(`FAKE_PRIVATE_${index}@example.test`, `FAKE_PRIVATE_ID_${index}`));
+				const { sdk, manager } = await withSpendCredits(false, seats);
+				vi.spyOn(manager, "getAccountForStrategy").mockReturnValue(null);
+				vi.spyOn(manager, "getMinWaitTimeForFamily").mockReturnValue(5001);
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation(() =>
+					state.getSelectionExplainability("gpt-5.1", "gpt-5.1").map((entry) => ({
+						...entry, reasons: entry.index === 0 ? [...entry.reasons, "FAKE_PRIVATE_REASON"] : entry.reasons,
+						quotaExhaustedUntil: entry.quotaExhaustedUntil,
+						accountId: "FAKE_PRIVATE_ID", email: "FAKE_PRIVATE@example.test", body: "FAKE_PRIVATE_PROMPT",
+					})),
+				);
+				const transport = vi.fn<typeof fetch>();
+				globalThis.fetch = transport;
+
+				const response = await prompt(sdk);
+				const body: unknown = await response.json();
+
+				expect(response.status).toBe(429);
+				expect(response.headers.get("retry-after")).toBe("6");
+				expect(response.headers.get("retry-after-ms")).toBe("5001");
+				expect(body).toMatchObject({ error: {
+					code: "all_accounts_rate_limited",
+					message: expect.stringContaining("Account exclusions: #1=quota-exhausted,unknown; #2=rate-limited; #3=cooldown:network-error; #4=token-bucket-empty."),
+				} });
+				expect(JSON.stringify(body)).not.toContain("FAKE_PRIVATE");
+				expect(transport).not.toHaveBeenCalled();
+			});
+
+			it("keeps concurrent failure reasons attached to their request across a credit-read await", async () => {
+				const helpers = await import("../lib/request/fetch-helpers.js");
+				vi.mocked(helpers.transformRequestForCodex).mockImplementation(async (init, _url, _config, _mode, parsed) => ({
+					updatedInit: init ?? {}, body: { model: typeof parsed?.model === "string" ? parsed.model : "gpt-5.1" },
+				}));
+				const { sdk, manager } = await withSpendCredits(true, [exhausted("FAKE_A@example.test", "FAKE_A")]);
+				const fetchRequest = sdk.fetch;
+				if (!fetchRequest) throw new TypeError("Missing mocked provider fetch");
+				const originalExplain = manager.getSelectionExplainability;
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation((_family, model) =>
+					originalExplain().map((entry) => model === "gpt-5.2"
+						? { ...entry, reasons: ["token-bucket-empty"], quotaExhaustedUntil: undefined } : entry),
+				);
+				const reading = Promise.withResolvers<void>();
+				const release = Promise.withResolvers<Response>();
+				const transport = vi.fn<typeof fetch>(async () => {
+					reading.resolve();
+					return release.promise;
+				});
+				globalThis.fetch = transport;
+
+				const pendingA = prompt(sdk);
+				await reading.promise;
+				const responseB = await fetchRequest("https://api.openai.com/v1/chat", {
+					method: "POST", body: JSON.stringify({ model: "gpt-5.2" }),
+				});
+				release.resolve(new Response(JSON.stringify({ credits: { has_credits: false, unlimited: false, balance: "0" } })));
+				const responseA = await pendingA;
+				const bodyA = await responseA.text();
+				const bodyB = await responseB.text();
+
+				expect(bodyA).toContain("#1=quota-exhausted,already-attempted");
+				expect(bodyA).not.toContain("token-bucket-empty");
+				expect(bodyB).toContain("#1=token-bucket-empty,already-attempted");
+				expect(bodyB).not.toContain("#1=quota-exhausted");
+				expect(transport).toHaveBeenCalledTimes(1);
+			});
+
+			it("reports a traversal attempt without inventing a missing upstream rejection", async () => {
+				const { sdk, manager } = await withSpendCredits(false, [{ email: "FAKE_A@example.test", accountId: "FAKE_A", eligible: true, reasons: ["eligible"] }]);
+				manager.consumeToken.mockReturnValue(false);
+				globalThis.fetch = vi.fn<typeof fetch>();
+
+				const response = await prompt(sdk);
+				const body = await response.text();
+
+				expect(body).toContain("Account exclusions: #1=already-attempted.");
+				expect(body).not.toContain("model-unsupported");
+				expect(globalThis.fetch).not.toHaveBeenCalled();
+			});
+
+			it("preserves an eligible account's successful response and selection", async () => {
+				const { sdk, manager } = await withSpendCredits(true, [{ email: "FAKE_A@example.test", accountId: "FAKE_A", eligible: true, reasons: ["eligible"] }]);
+				const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ content: "success" })));
+				globalThis.fetch = transport;
+
+				const response = await prompt(sdk);
+
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({ content: "success" });
+				expect(transport).toHaveBeenCalledTimes(1);
+				expect(manager.consumeToken).toHaveBeenCalledWith(manager.accounts[0], "gpt-5.1", "gpt-5.1");
+			});
+		});
+
 		it("keeps credits unspent by default, and says where they are and how to use them", async () => {
 			const { getCreditsAccountKey, creditsLedger } = await import("../lib/codex-credits.js");
 			const seats = [exhausted("a@example.com", "acc-a"), exhausted("b@example.com", "acc-b")];
@@ -5622,6 +5746,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			code: "strict_pool_unavailable",
 		});
 		expect(body.error.message).toContain("Strict account pool unavailable");
+		expect(body.error.message).toContain("Account exclusions: #1=outside-pool.");
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 
 		const metrics = parseJsonOutput<{
