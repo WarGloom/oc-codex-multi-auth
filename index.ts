@@ -269,6 +269,7 @@ import {
 	type RoutingVisibilitySnapshot,
 	type RuntimeMetrics,
 } from "./lib/runtime.js";
+import { formatAccountExclusions, type AccountExclusion } from "./lib/account-exclusions.js";
 import {
 	createToolRegistry,
 	type ToolContext,
@@ -3378,6 +3379,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 								: formatCreditsOutOfQuotaHint({ spendCredits: spendCreditsEnabled, accounts });
 						};
 
+			let selectionExclusions: readonly AccountExclusion[] = [];
 			while (true) {
 				const selectionExplainability = accountManager.getSelectionExplainability(
 					modelFamily,
@@ -3432,6 +3434,13 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 				const currentExplainability = rotationStrategy === "custom"
 					? accountManager.getSelectionExplainability(modelFamily, model, Date.now())
 					: selectionExplainability;
+				selectionExclusions = currentExplainability.map((entry) => ({
+					index: entry.index,
+					reasons: [
+						...entry.reasons,
+						...(strictAccountPool && !isPoolMember(entry.index) ? ["outside-pool"] : []),
+					],
+				}));
 				const selectedIneligible = selected !== null &&
 					currentExplainability.some((entry) => entry.index === selected.index && !entry.eligible);
 				// `spendCredits`: once no entitled account has plan quota left, an
@@ -4582,6 +4591,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									: "";
 							const creditsDetail = describeCreditsWhenOutOfQuota();
 							const message =
+								`${formatAccountExclusions(selectionExclusions, attempted)} ` +
 								`Strict account pool unavailable for ${effectiveModel}. ` +
 								`${preferredAccountIds.length} configured pool key(s) resolved to ${poolAccountCount} account(s).` +
 								attemptDetail +
@@ -4776,7 +4786,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									entitlementModel.length > 0
 										? ` The backend rejected '${entitlementModel}' as not entitled for Codex OAuth on ${unsupportedCount} of ${attemptedCount} attempted account(s).${unavailableCount > 0 ? ` ${unavailableCount} configured account(s) were unavailable or excluded.` : ""}`
 										: "";
-								const message =
+								const message = `${formatAccountExclusions(selectionExclusions, attempted)} ` + (
 									count === 0
 										? "No Codex accounts configured. Run `opencode auth login`."
 										: allDisabled
@@ -4787,7 +4797,8 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 												? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.${outOfQuotaCredits}`
 												: wasEntitlementExhaustion
 													? `No selectable account succeeded for the requested model across ${count} configured account(s).${entitlementDetail} Codex model access is account/workspace gated; default gpt-5.6-sol/terra/luna selectors auto-fallback down the 5.6 tiers to gpt-5.5, and gpt-5.5/gpt-5-codex through the GPT-5.4 family when possible. Set \`unsupportedCodexPolicy: "fallback"\` for the full manual fallback chain, or see \`codex-health\` for per-account details.`
-													: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
+														: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`
+								);
 								// `code` mirrors the strict-pool envelope's
 								// `strict_pool_unavailable` so a client can branch
 								// on a stable machine string instead of parsing the
