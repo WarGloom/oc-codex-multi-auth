@@ -254,6 +254,16 @@ export class ModelEntitlements {
 
 type ExplainedAccount = Pick<AccountSelectionExplainability, "index" | "eligible" | "reasons">;
 
+type CreditsFallbackOptions = {
+	attempted: ReadonlySet<number>;
+	inPool: (index: number) => boolean;
+	preferred?: (index: number) => boolean;
+	currentIndex?: number;
+	unsupported: (index: number) => boolean;
+	refused: (index: number) => boolean;
+	balance: (index: number) => CreditsBalance | undefined;
+};
+
 /**
  * Whether an account can still serve on its plan quota at some point without
  * spending credits. Only a spent subscription window (`quota-exhausted`) says
@@ -281,19 +291,12 @@ export type CreditsPlan =
  * inside its per-model pool, when one is strict) has plan quota left. The
  * accounts offered are the ones held back by nothing but their spent window,
  * not yet tried this request, not refused, and not known to hold a zero
- * balance - preferred-pool members first, then the largest known balance,
- * then the unknown ones the caller has to read before using.
+ * balance - preferred-pool members first, then the current account, then
+ * the largest known balance, followed by unknown balances.
  */
 export function planCreditsFallback(
 	explainability: readonly ExplainedAccount[],
-	options: {
-		attempted: ReadonlySet<number>;
-		inPool: (index: number) => boolean;
-		preferred?: (index: number) => boolean;
-		unsupported: (index: number) => boolean;
-		refused: (index: number) => boolean;
-		balance: (index: number) => CreditsBalance | undefined;
-	},
+	options: CreditsFallbackOptions,
 ): CreditsPlan {
 	const pool = explainability.filter(
 		(entry) => options.inPool(entry.index) && !options.unsupported(entry.index),
@@ -312,6 +315,9 @@ export function planCreditsFallback(
 		.map((entry) => entry.index)
 		.sort((left, right) => {
 			if (preferred(left) !== preferred(right)) return preferred(left) ? -1 : 1;
+			if ((left === options.currentIndex) !== (right === options.currentIndex)) {
+				return left === options.currentIndex ? -1 : 1;
+			}
 			const leftBalance = options.balance(left);
 			const rightBalance = options.balance(right);
 			if ((leftBalance === undefined) !== (rightBalance === undefined)) {
@@ -322,6 +328,31 @@ export function planCreditsFallback(
 			return left - right;
 		});
 	return { kind: "credits", indices };
+}
+
+export function getCreditsRecoveryWait(
+	explainability: readonly AccountSelectionExplainability[],
+	options: CreditsFallbackOptions & { tokenWait: (index: number) => number },
+	now = Date.now(),
+): number {
+	const pool = explainability.filter((entry) => options.inPool(entry.index) && !options.unsupported(entry.index));
+	if (pool.some(hasPlanQuota)) return 0;
+	const waits = pool.flatMap((entry) => {
+		if (!entry.enabled || options.refused(entry.index) || !hasSpendableCredits(options.balance(entry.index))) return [];
+		if (!entry.reasons.includes("quota-exhausted")) return [];
+		const blocks = entry.reasons.map((reason) => {
+			switch (reason) {
+				case "quota-exhausted": return 0;
+				case "token-bucket-empty": return options.tokenWait(entry.index);
+				case "rate-limited": return entry.rateLimitedUntil === undefined ? Infinity : Math.max(0, entry.rateLimitedUntil - now);
+				case "cooldown:network-error": return entry.coolingDownUntil === undefined ? Infinity : Math.max(0, entry.coolingDownUntil - now);
+				default: return Infinity;
+			}
+		});
+		const wait = Math.max(...blocks);
+		return Number.isFinite(wait) && wait > 0 ? [wait] : [];
+	});
+	return waits.length > 0 ? Math.min(...waits) : 0;
 }
 
 export type CreditsAccountSummary = {
