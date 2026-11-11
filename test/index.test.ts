@@ -5085,6 +5085,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			({ email, accountId, eligible: false, reasons: ["quota-exhausted"] });
 		const buildManager = (seats: Seat[]) => {
 			const until = Date.now() + 3 * 86_400_000;
+			let currentIndex = 0;
 			const accounts = seats.map((seat, index) => ({
 				index,
 				accountId: seat.accountId,
@@ -5101,16 +5102,19 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				getAccountForStrategy: (
 					_strategy: unknown, _family: unknown, _model: unknown, _options: unknown,
 					_pool: unknown, _mode: unknown, attempted: Set<number>,
-				) =>
-					accounts.find((account) => seats[account.index]?.eligible && !attempted.has(account.index)) ??
+				) => {
+					const selected = accounts.find((account) => seats[account.index]?.eligible && !attempted.has(account.index)) ??
 					accounts.find((account) => !attempted.has(account.index)) ??
-					null,
+					null;
+					if (selected) currentIndex = selected.index;
+					return selected;
+				},
 				getAccountAt: (index: number) => accounts[index] ?? null,
-				getSelectionExplainability: () =>
+				getSelectionExplainability: (_family?: string, _model?: string | null) =>
 					seats.map((seat, index) => ({
 						index,
 						enabled: true,
-						isCurrentForFamily: index === 0,
+						isCurrentForFamily: index === currentIndex,
 						eligible: seat.eligible,
 						reasons: seat.reasons,
 						healthScore: 100,
@@ -5118,12 +5122,12 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 						quotaExhaustedUntil: seat.eligible ? undefined : until,
 						lastUsed: 1,
 					})),
-				toAuthDetails: (account: { refreshToken: string }) => ({
+				toAuthDetails: vi.fn((account: { refreshToken: string }) => ({
 					type: "oauth" as const,
 					access: "access-1",
 					refresh: account.refreshToken,
 					expires: Date.now() + 3_600_000,
-				}),
+				})),
 				hasRefreshToken: () => true,
 				saveToDiskDebounced: vi.fn(),
 				updateFromAuth: vi.fn(),
@@ -5135,7 +5139,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				recordRateLimit: vi.fn(),
 				consumeToken: vi.fn(() => true),
 				refundToken: vi.fn(),
-				markSwitched: vi.fn(),
+				markSwitched: vi.fn((account: { index: number }) => { currentIndex = account.index; }),
 				removeAccount: vi.fn(() => false),
 				removeAccountsWithSameRefreshToken: vi.fn(() => 0),
 				recordFailure: vi.fn(),
@@ -5193,6 +5197,203 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			creditsLedger.clear();
 		});
 
+		describe("credit recovery before provider failure", () => {
+			afterEach(async () => {
+				vi.useRealTimers();
+				const { resetTrackers } = await import("../lib/rotation.js");
+				resetTrackers();
+			});
+
+			it.each([
+				{ delay: 60_000, retry: true, maxRetries: 1 },
+				{ delay: 10_000, retry: false, maxRetries: 1 },
+				{ delay: 10_000, retry: true, maxRetries: 0 },
+			])("preserves ordinary model fallback when credit waiting cannot run ($delay, $retry, $maxRetries)", async ({ delay, retry, maxRetries }) => {
+				const config = await import("../lib/config.js");
+				vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: retry, retryAllAccountsMaxRetries: maxRetries });
+				const { sdk, manager } = await withSpendCredits(true, [exhausted("FAKE@example.test", "FAKE")]);
+				const account = manager.accounts[0];
+				if (!account) throw new TypeError("Missing fixture account");
+				const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+				creditsLedger.record(getCreditsAccountKey(account), { hasCredits: true, unlimited: false, balance: 10 });
+				const originalExplain = manager.getSelectionExplainability;
+				let askedModel: string | null | undefined;
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation((_family, model) => {
+					askedModel = model;
+					return originalExplain().map((entry) => ({
+						...entry, eligible: model === "gpt-5.5", reasons: model === "gpt-5.5" ? ["eligible"] : ["quota-exhausted", "rate-limited"],
+						quotaExhaustedUntil: model === "gpt-5.5" ? undefined : entry.quotaExhaustedUntil,
+						rateLimitedUntil: model === "gpt-5.5" ? undefined : Date.now() + delay,
+					}));
+				});
+				vi.spyOn(manager, "getAccountForStrategy").mockImplementation(() => askedModel === "gpt-5.5" ? account : null);
+				const helpers = await import("../lib/request/fetch-helpers.js");
+				vi.mocked(helpers.isDefaultAutoFallbackModel).mockReturnValue(true);
+				vi.mocked(helpers.pickFallbackChainTarget).mockReturnValue("gpt-5.5");
+				const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ content: "ordinary fallback" })));
+				globalThis.fetch = transport;
+
+				const response = await prompt(sdk);
+
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({ content: "ordinary fallback" });
+				expect(transport).toHaveBeenCalledTimes(1);
+			});
+
+			it("does not borrow a long credit deadline for ordinary retry or usage probing without fallback", async () => {
+				vi.useFakeTimers();
+				const config = await import("../lib/config.js");
+				vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: true, retryAllAccountsMaxRetries: 1, retryAllAccountsMaxWaitMs: 90_000 });
+				const { sdk, manager } = await withSpendCredits(true, [exhausted("FAKE@example.test", "FAKE")]);
+				const account = manager.accounts[0];
+				if (!account) throw new TypeError("Missing fixture account");
+				const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+				creditsLedger.record(getCreditsAccountKey(account), { hasCredits: true, unlimited: false, balance: 10 });
+				const originalExplain = manager.getSelectionExplainability;
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation(() => originalExplain().map((entry) => ({
+					...entry, reasons: ["quota-exhausted", "rate-limited"], rateLimitedUntil: Date.now() + 60_000,
+				})));
+				vi.spyOn(manager, "getAccountForStrategy").mockReturnValue(null);
+				const helpers = await import("../lib/request/fetch-helpers.js");
+				vi.mocked(helpers.isDefaultAutoFallbackModel).mockReturnValue(true);
+				vi.mocked(helpers.pickFallbackChainTarget).mockReturnValue(undefined);
+				const transport = vi.fn<typeof fetch>();
+				globalThis.fetch = transport;
+				let settled = false;
+
+				const pending = prompt(sdk).then((response) => { settled = true; return response; });
+				await vi.advanceTimersByTimeAsync(0);
+				expect(settled).toBe(true);
+				await vi.advanceTimersByTimeAsync(60_000);
+				const response = await pending;
+
+				expect(response.status).toBe(429);
+				expect(await response.json()).toMatchObject({ error: { code: "all_accounts_rate_limited" } });
+				expect(quotaMonitorMock.runNow).not.toHaveBeenCalled();
+				expect(transport).not.toHaveBeenCalled();
+			});
+
+			it.each([{ strict: false, retry: true }, { strict: false, retry: false }, { strict: true, retry: false }])("preserves earlier plan recovery over a later credit deadline (strict=$strict, retry=$retry)", async ({ strict, retry }) => {
+				vi.useFakeTimers();
+				const started = Date.now();
+				const config = await import("../lib/config.js");
+				vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: retry, retryAllAccountsMaxRetries: 1 });
+				if (strict) {
+					vi.mocked(config.getModelAccountPool).mockReturnValue(["FAKE_A", "FAKE_B"]);
+					vi.mocked(config.getModelAccountPoolMode).mockReturnValue("strict");
+				}
+				const seats = [exhausted("FAKE_A@example.test", "FAKE_A"), exhausted("FAKE_B@example.test", "FAKE_B")];
+				const { sdk, manager } = await withSpendCredits(true, seats);
+				const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+				for (const account of manager.accounts) creditsLedger.record(getCreditsAccountKey(account), { hasCredits: account.index === 0, unlimited: false, balance: account.index === 0 ? 10 : 0 });
+				const originalExplain = manager.getSelectionExplainability;
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation(() => {
+					const plan = seats[1];
+					if (!plan) throw new TypeError("Missing fixture plan account");
+					plan.eligible = Date.now() >= started + 10_000;
+					plan.reasons = plan.eligible ? ["eligible"] : ["quota-exhausted"];
+					return originalExplain().map((entry) => entry.index === 0
+						? { ...entry, reasons: ["quota-exhausted", "rate-limited"], rateLimitedUntil: started + 60_000 }
+						: { ...entry, quotaExhaustedUntil: plan.eligible ? undefined : started + 10_000 });
+				});
+				vi.spyOn(manager, "getMinWaitTimeForFamily").mockImplementation(() => Math.max(0, started + 10_000 - Date.now()));
+				const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ content: "plan recovered" })));
+				globalThis.fetch = transport;
+
+				const pending = prompt(sdk);
+				await vi.advanceTimersByTimeAsync(9999);
+				expect(transport).not.toHaveBeenCalled();
+				if (retry) await vi.advanceTimersByTimeAsync(1);
+				const response = await pending;
+
+				if (retry) {
+					expect(response.status).toBe(200);
+					expect(manager.toAuthDetails).toHaveBeenCalledWith(manager.accounts[1]);
+					expect(transport).toHaveBeenCalledTimes(1);
+				} else {
+					expect(response.status).toBe(429);
+					expect(response.headers.get("retry-after-ms")).toBe("10000");
+				}
+			});
+
+			it("gives a funded account its credit turn after its plan turn exhausts quota", async () => {
+				const seat = { email: "FAKE@example.test", accountId: "FAKE", eligible: true, reasons: ["eligible"] };
+				const { sdk, manager } = await withSpendCredits(true, [seat]);
+				const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+				const account = manager.accounts[0];
+				if (!account) throw new TypeError("Missing fixture account");
+				creditsLedger.record(getCreditsAccountKey(account), { hasCredits: true, unlimited: false, balance: 10 });
+				manager.markQuotaExhausted.mockImplementation(() => {
+					seat.eligible = false;
+					seat.reasons = ["quota-exhausted"];
+					return true;
+				});
+				const helpers = await import("../lib/request/fetch-helpers.js");
+				vi.mocked(helpers.handleErrorResponse).mockImplementation(async (response) => ({
+					response, rateLimit: { retryAfterMs: 60_000, code: "usage_limit_reached" }, quotaHeadersAuthoritative: true,
+				}));
+				const transport = vi.fn<typeof fetch>()
+					.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), {
+						status: 429, headers: {
+							"x-codex-primary-used-percent": "100", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-after-seconds": "600",
+							"x-codex-credits-has-credits": "true", "x-codex-credits-unlimited": "false", "x-codex-credits-balance": "10",
+						},
+					}))
+					.mockResolvedValueOnce(new Response(JSON.stringify({ content: "credit success" })));
+				globalThis.fetch = transport;
+
+				const response = await prompt(sdk);
+
+				expect(manager.markQuotaExhausted).toHaveBeenCalled();
+				expect(await response.json()).toEqual({ content: "credit success" });
+				expect(response.status).toBe(200);
+				expect(transport).toHaveBeenCalledTimes(2);
+			});
+
+			it.each([{ retry: false, strict: false }, { retry: true, strict: false }, { retry: true, strict: true }])("uses the funded bucket refill window (retry=$retry, strict=$strict)", async ({ retry, strict }) => {
+				const { AccountState } = await import("../lib/accounts/state.js");
+				const { getTokenTracker, resetTrackers } = await import("../lib/rotation.js");
+				resetTrackers();
+				vi.useFakeTimers();
+				const config = await import("../lib/config.js");
+				vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: retry, retryAllAccountsMaxRetries: 1 });
+				if (strict) {
+					vi.mocked(config.getModelAccountPool).mockReturnValue(["FAKE"]);
+					vi.mocked(config.getModelAccountPoolMode).mockReturnValue("strict");
+				}
+				const { sdk, manager } = await withSpendCredits(true, [exhausted("FAKE@example.test", "FAKE")]);
+				const state = new AccountState();
+				state.initializeFromStorage(undefined, {
+					version: 3, activeIndex: 0, accounts: [{ refreshToken: "FAKE", addedAt: 1, lastUsed: 1, quotaExhaustedUntil: Date.now() + 86400_000 }],
+				});
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation(() => state.getSelectionExplainability("gpt-5.1", "gpt-5.1").map((entry) => ({ ...entry, quotaExhaustedUntil: entry.quotaExhaustedUntil })));
+				const tracker = getTokenTracker();
+				tracker.drain(0, "gpt-5.1:gpt-5.1", 50);
+				manager.consumeToken.mockImplementation(() => tracker.tryConsume(0, "gpt-5.1:gpt-5.1"));
+				const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+				const account = manager.accounts[0];
+				if (!account) throw new TypeError("Missing fixture account");
+				creditsLedger.record(getCreditsAccountKey(account), { hasCredits: true, unlimited: false, balance: 10 });
+				const transport = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ content: "refilled" })));
+				globalThis.fetch = transport;
+
+				const pending = prompt(sdk);
+				await vi.advanceTimersByTimeAsync(9999);
+				expect(transport).not.toHaveBeenCalled();
+				if (retry) await vi.advanceTimersByTimeAsync(1);
+				const response = await pending;
+
+				if (retry) {
+					expect(response.status).toBe(200);
+					expect(transport).toHaveBeenCalledTimes(1);
+				} else {
+					expect(response.status).toBe(429);
+					expect(response.headers.get("retry-after")).toBe("10");
+					expect(response.headers.get("retry-after-ms")).toBe("10000");
+				}
+			});
+		});
+
 		it("keeps credits unspent by default, and says where they are and how to use them", async () => {
 			const { getCreditsAccountKey, creditsLedger } = await import("../lib/codex-credits.js");
 			const seats = [exhausted("a@example.com", "acc-a"), exhausted("b@example.com", "acc-b")];
@@ -5221,6 +5422,35 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(toastMessages(mockClient)).toContain(
 				"Plan quota used up on every account. Spending Codex credits on Account 2 (62,500 left).",
 			);
+		});
+
+		it("reuses the current credit account across requests when another balance becomes larger", async () => {
+			const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+			const seats = [exhausted("a@example.com", "acc-a"), exhausted("b@example.com", "acc-b")];
+			const { sdk, manager } = await withSpendCredits(true, seats);
+			creditsLedger.record(getCreditsAccountKey(manager.accounts[0]!), { hasCredits: true, unlimited: false, balance: 100 });
+			creditsLedger.record(getCreditsAccountKey(manager.accounts[1]!), { hasCredits: true, unlimited: false, balance: 99 });
+			routeFetch([]);
+			expect((await prompt(sdk)).status).toBe(200);
+			creditsLedger.record(getCreditsAccountKey(manager.accounts[0]!), { hasCredits: true, unlimited: false, balance: 98 });
+			expect((await prompt(sdk)).status).toBe(200);
+			expect(manager.toAuthDetails.mock.calls.map(([account]) => account.refreshToken)).toEqual(["refresh-0", "refresh-0"]);
+		});
+
+		it("retains a credit fallback account after the previous account runs out", async () => {
+			const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+			const { sdk, manager } = await withSpendCredits(true, [exhausted("a@example.com", "acc-a"), exhausted("b@example.com", "acc-b")]);
+			creditsLedger.record(getCreditsAccountKey(manager.accounts[0]!), { hasCredits: false, unlimited: false, balance: 0 });
+			creditsLedger.record(getCreditsAccountKey(manager.accounts[1]!), { hasCredits: true, unlimited: false, balance: 100 });
+			routeFetch([], () => new Response(JSON.stringify({ content: "ok" }), {
+				status: 200, headers: { "x-codex-credits-has-credits": "true", "x-codex-credits-unlimited": "false", "x-codex-credits-balance": "100" },
+			}));
+			expect((await prompt(sdk)).status).toBe(200);
+			expect(manager.getSelectionExplainability()[1]?.isCurrentForFamily).toBe(true);
+			expect(creditsLedger.get(getCreditsAccountKey(manager.accounts[1]!))?.balance).toBe(100);
+			creditsLedger.record(getCreditsAccountKey(manager.accounts[0]!), { hasCredits: true, unlimited: false, balance: 500 });
+			expect((await prompt(sdk)).status).toBe(200);
+			expect(manager.markSwitched.mock.calls.map(([account]) => account.index)).toEqual([1, 1]);
 		});
 
 		it("spends nothing while an entitled account still has plan quota", async () => {
@@ -5268,12 +5498,24 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 
 		it("stops offering an account whose credits turn was refused", async () => {
+			const helpers = await import("../lib/request/fetch-helpers.js");
+			vi.mocked(helpers.handleErrorResponse).mockImplementation(async (response) => ({
+				response, rateLimit: { code: "usage_limit_reached", retryAfterMs: 600_000 }, quotaHeadersAuthoritative: true,
+			}));
+			const accounts = await import("../lib/accounts.js");
+			vi.spyOn(accounts, "parseRateLimitReason").mockReturnValue("quota");
 			const fetchRoute = routeFetch(["62500"], () =>
-				new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), { status: 429 }),
+				new Response(JSON.stringify({ error: { code: "usage_limit_reached" } }), {
+					status: 429, headers: { "x-codex-primary-used-percent": "100", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-after-seconds": "600", "x-codex-credits-has-credits": "true", "x-codex-credits-unlimited": "false", "x-codex-credits-balance": "62500" },
+				}),
 			);
-			const { sdk } = await withSpendCredits(true, [exhausted("a@example.com", "acc-a")]);
+			const { sdk, manager } = await withSpendCredits(true, [exhausted("a@example.com", "acc-a")]);
 			await prompt(sdk);
 			expect(fetchRoute.responseCalls()).toBe(1);
+			const { creditsLedger, getCreditsAccountKey } = await import("../lib/codex-credits.js");
+			const account = manager.accounts[0];
+			if (!account) throw new TypeError("Missing fixture account");
+			expect(creditsLedger.isRefused(getCreditsAccountKey(account))).toBe(true);
 			const second = await prompt(sdk);
 			expect(second.status).not.toBe(200);
 			expect(fetchRoute.responseCalls()).toBe(1);

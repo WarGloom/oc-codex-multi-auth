@@ -399,14 +399,27 @@ instead of waiting:
   merely throttled or cooling down is waited for, not paid around. A seat the
   backend says cannot serve the model does not count, and neither does one
   outside a `strict` `modelAccountPools` entry for that model.
-- Only an account whose balance is above zero is used, largest balance first
-  (members of the model's account pool before others). The balance is read
-  from `/wham/usage` before the first turn is billed to it, and kept current
-  from the `x-codex-credits-*` headers on every reply.
+- Only an account whose balance is above zero is used. With `hybrid` rotation,
+  the current account is retained while eligible so subsequent requests can
+  reuse its prompt cache. Model pool preferences still apply; when there is no
+  eligible current account, candidates are ranked by balance. The balance is
+  read from `/wham/usage` before the first turn is billed to it, and kept
+  current from the `x-codex-credits-*` headers on every reply.
 - Each request decides again, so the first plan window that resets takes the
-  traffic back.
+  traffic back. The current account is not pinned to a session: it can change
+  when an account becomes unavailable or another request changes the current
+  selection.
 - A credits turn the backend refuses keeps that account out until the reset
   the refusal names.
+- A plan turn or skipped rotation entry does not consume the account's credit
+  opportunity. Credit traversal remains separate and bounded within each request.
+- If a funded credit account needs only a local token refill or temporary
+  throttle/network cooldown, retry timing uses that recovery window instead of
+  the spent subscription window. Automatic credit recovery waits are limited to
+  30 seconds and the existing retry count, wait limit, and retry budget. Disabled
+  retries return the short recovery window through the existing Retry-After
+  headers. Unknown/expired balances, auth failures, unsupported models, strict
+  pool exclusions, and credit refusals do not authorize this wait or bypass a gate.
 - A toast says which account is spending credits and how many are left:
 
   ```text

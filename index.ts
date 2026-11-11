@@ -226,7 +226,7 @@ import {
 	resolveRetryBudgetLimits,
 	type RetryBudgetClass,
 } from "./lib/request/retry-budget.js";
-import { addJitter } from "./lib/rotation.js";
+import { addJitter, getTokenTracker } from "./lib/rotation.js";
 import { setUiRuntimeOptions, type UiRuntimeOptions } from "./lib/ui/runtime.js";
 import { sanitizeDisplayText } from "./lib/ui/display-text.js";
 import { formatUiBadge, formatUiHeader, formatUiItem, formatUiKeyValue, formatUiSection } from "./lib/ui/format.js";
@@ -295,6 +295,7 @@ import {
 	hasSpendableCredits,
 	parseCreditsHeaders,
 	planCreditsFallback,
+	getCreditsRecoveryWait,
 	type CreditsAccountSummary,
 	type CreditsBalance,
 } from "./lib/codex-credits.js";
@@ -3235,6 +3236,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						}
 						const accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
+						const creditTraversal = new Set<number>();
 						// Diagnostics for the terminal error message below. The composite key keeps
 						// legacy Business seats distinct and can also be compared with snapshots
 						// after a mid-traversal account removal.
@@ -3304,15 +3306,17 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						// credits, once no entitled account has plan quota left.
 						const pickCreditsAccount = async (
 							explainability: ReturnType<AccountManager["getSelectionExplainability"]>,
+							currentIndex: number | undefined,
 						): Promise<{ account: ManagedAccount; balance: CreditsBalance } | null> => {
 							const keyAt = (index: number): string | undefined => {
 								const candidate = accountManager.getAccountAt(index);
 								return candidate ? getCreditsAccountKey(candidate) : undefined;
 							};
-							const plan = planCreditsFallback(explainability, {
-								attempted,
+							const creditOptions = {
+								attempted: creditTraversal,
 								inPool: (index) => !strictAccountPool || isPoolMember(index),
 								preferred: preferredAccountIds.length > 0 ? isPoolMember : undefined,
+								currentIndex,
 								unsupported: (index) => {
 									const candidate = accountManager.getAccountAt(index);
 									return candidate === null || isKnownUnsupported(candidate);
@@ -3325,7 +3329,8 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									const key = keyAt(index);
 									return key === undefined ? undefined : creditsLedger.get(key);
 								},
-							});
+							} satisfies Parameters<typeof planCreditsFallback>[1];
+							const plan = planCreditsFallback(explainability, creditOptions);
 							if (plan.kind !== "credits") return null;
 							for (const index of plan.indices) {
 								const candidate = accountManager.getAccountAt(index);
@@ -3373,7 +3378,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 								: formatCreditsOutOfQuotaHint({ spendCredits: spendCreditsEnabled, accounts });
 						};
 
-			while (attempted.size < Math.max(1, accountCount)) {
+			while (true) {
 				const selectionExplainability = accountManager.getSelectionExplainability(
 					modelFamily,
 					model,
@@ -3433,20 +3438,29 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 				// account held back only by its spent window serves on its credits.
 				const creditsChoice =
 					spendCreditsEnabled && (!selected || attempted.has(selected.index) || selectedIneligible)
-						? await pickCreditsAccount(currentExplainability)
+						? await pickCreditsAccount(
+							currentExplainability,
+							rotationStrategy === "hybrid"
+								? selectionExplainability.find((entry) => entry.isCurrentForFamily)?.index
+								: undefined,
+						)
 						: null;
 				const servingOnCredits = creditsChoice !== null;
 				const account = creditsChoice?.account ?? selected;
-				if (!account || attempted.has(account.index)) {
+				if (!account || (!servingOnCredits && attempted.has(account.index))) {
 					break;
 				}
 							attempted.add(account.index);
+							if (servingOnCredits) creditTraversal.add(account.index);
 							// Hybrid's last-resort result is not necessarily eligible. Requests
 							// must honor active blocks rather than sending it upstream anyway.
 							if (!servingOnCredits && selectedIneligible) {
 								continue;
 							}
 							if (creditsChoice) {
+								if (rotationStrategy === "hybrid") {
+									accountManager.markSwitched(account, "rotation", modelFamily);
+								}
 								const creditsMessage = formatServingOnCreditsToast({
 									label: formatAccountLabel(account, account.index, {
 										maskEmail: maskEmailEnabled,
@@ -4492,13 +4506,47 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						// backend rejected as not entitled to the model.
 						const attemptedCount = fetchedAccountKeys.size;
 						const unsupportedCount = unsupportedAccountKeys.size;
+						const creditWaitMs = spendCreditsEnabled ? getCreditsRecoveryWait(
+							accountManager.getSelectionExplainability(modelFamily, model),
+							{
+								attempted: creditTraversal,
+								inPool: (index) => !strictAccountPool || isPoolMember(index),
+								unsupported: (index) => {
+									const account = accountManager.getAccountAt(index);
+									return account === null || isKnownUnsupported(account);
+								},
+								refused: (index) => {
+									const account = accountManager.getAccountAt(index);
+									return account === null || creditsLedger.isRefused(getCreditsAccountKey(account));
+								},
+								balance: (index) => {
+									const account = accountManager.getAccountAt(index);
+									return account === null ? undefined : creditsLedger.get(getCreditsAccountKey(account));
+								},
+								tokenWait: (index) => getTokenTracker().msUntilToken(index, quotaKey),
+							},
+						) : 0;
+						const planWaitMs = accountManager.getMinWaitTimeForFamily(
+							modelFamily, model, strictAccountPool ? preferredAccountIds : undefined,
+						);
+						const recoveryWaitMs = creditWaitMs > 0 && planWaitMs > 0
+							? Math.min(creditWaitMs, planWaitMs)
+							: planWaitMs || creditWaitMs;
+						if (
+							creditWaitMs > 0 && creditWaitMs <= MAX_ADVERTISED_RETRY_AFTER_MS &&
+							creditWaitMs === recoveryWaitMs &&
+							retryAllAccountsRateLimited &&
+							(effectiveRetryAllMaxWaitMs === 0 || creditWaitMs <= effectiveRetryAllMaxWaitMs) &&
+							allRateLimitedRetries < retryAllAccountsMaxRetries &&
+							consumeRetryBudget("rateLimitGlobal", "Funded credit account recovery", creditWaitMs)
+						) {
+							await sleepWithCountdown(creditWaitMs, "Waiting for funded Codex account recovery");
+							allRateLimitedRetries++;
+							continue;
+						}
 
 						if (strictAccountPool) {
-							const poolWaitMs = accountManager.getMinWaitTimeForFamily(
-								modelFamily,
-								model,
-								preferredAccountIds,
-							);
+							const poolWaitMs = recoveryWaitMs;
 							const effectiveModel = model ?? requestedModel ?? "requested model";
 							const accountSnapshot = accountManager.getAccountsSnapshot();
 							const poolAccounts = accountSnapshot.filter((account) =>
@@ -4571,7 +4619,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							);
 						}
 
-								const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
+								const waitMs = recoveryWaitMs;
 								const count = accountManager.getAccountCount();
 								// Every configured account disabled is not a rate limit and
 								// must not render as one — a leftover auth-failure cooldown
@@ -4686,20 +4734,20 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 								if (
 									retryAllAccountsRateLimited &&
 									count > 0 &&
-									waitMs > 0 &&
+									planWaitMs > 0 &&
 									(effectiveRetryAllMaxWaitMs === 0 ||
-										waitMs <= effectiveRetryAllMaxWaitMs) &&
+										planWaitMs <= effectiveRetryAllMaxWaitMs) &&
 									allRateLimitedRetries < retryAllAccountsMaxRetries &&
 									consumeRetryBudget(
 										"rateLimitGlobal",
-										`All accounts rate-limited wait ${waitMs}ms`,
-										waitMs,
+										`All accounts rate-limited wait ${planWaitMs}ms`,
+										planWaitMs,
 									)
 								) {
 									const countdownCredits = upstreamBlocked ? describeCreditsWhenOutOfQuota() : "";
 									const countdownMessage = `All ${count} account(s) rate-limited.${countdownCredits} Waiting`;
 									await sleepWithCountdown(
-										addJitter(waitMs, 0.2),
+										addJitter(planWaitMs, 0.2),
 										countdownMessage,
 										undefined,
 										probeUpstreamBlockLifted,

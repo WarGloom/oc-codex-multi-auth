@@ -12,6 +12,7 @@ import {
 	parseCreditsHeaders,
 	parseUsageCreditsBalance,
 	planCreditsFallback,
+	getCreditsRecoveryWait,
 	type CreditsBalance,
 } from "../lib/codex-credits.js";
 import {
@@ -224,9 +225,58 @@ describe("planCreditsFallback", () => {
 		expect(plan).toEqual({ kind: "credits", indices: [4, 3, 0, 2] });
 	});
 
+	it("keeps the current credit account ahead of a larger balance and fails over when refused", () => {
+		const seats = [entry(0, false, ["quota-exhausted"]), entry(1, false, ["quota-exhausted"])];
+		const options = { ...base, currentIndex: 0, balance: (index: number) => balance(index === 0 ? 5 : 100) };
+		expect(planCreditsFallback(seats, options)).toEqual({ kind: "credits", indices: [0, 1] });
+		expect(planCreditsFallback(seats, { ...options, refused: (index) => index === 0 }))
+			.toEqual({ kind: "credits", indices: [1] });
+	});
+
 	it("does not offer an account blocked by more than its spent window", () => {
 		expect(planCreditsFallback([entry(0, false, ["quota-exhausted", "cooldown"])], base))
 			.toEqual({ kind: "plan-quota-left" });
+	});
+});
+
+describe("funded credit recovery", () => {
+	const now = 1000;
+	const account = {
+		index: 0, enabled: true, eligible: false, isCurrentForFamily: true,
+		reasons: ["quota-exhausted", "token-bucket-empty"], healthScore: 100,
+		tokensAvailable: 0, lastUsed: 1, quotaExhaustedUntil: now + 86400_000,
+	};
+	const options = {
+		attempted: new Set([0]), inPool: () => true, unsupported: () => false,
+		refused: () => false, balance: () => balance(10), tokenWait: () => 10_000,
+	};
+
+	it("waits for local refill instead of the subscription reset or traversal marker", () => {
+		expect(getCreditsRecoveryWait([account], options, now)).toBe(10_000);
+	});
+
+	it("waits for the longest real temporary block before considering credits usable", () => {
+		const blocked = { ...account, reasons: [...account.reasons, "rate-limited", "cooldown:network-error"], rateLimitedUntil: now + 12_000, coolingDownUntil: now + 15_000 };
+		expect(getCreditsRecoveryWait([blocked], options, now)).toBe(15_000);
+	});
+
+	it.each([
+		{ name: "zero", override: { balance: () => balance(0) } },
+		{ name: "unknown or expired", override: { balance: () => undefined } },
+		{ name: "refused", override: { refused: () => true } },
+		{ name: "unsupported", override: { unsupported: () => true } },
+		{ name: "outside strict pool", override: { inPool: () => false } },
+	])("does not promise recovery for $name credits", ({ override }) => {
+		expect(getCreditsRecoveryWait([account], { ...options, ...override }, now)).toBe(0);
+	});
+
+	it.each([
+		{ ...account, enabled: false, reasons: ["disabled", ...account.reasons] },
+		{ ...account, reasons: ["quota-exhausted", "cooldown:auth-failure"], coolingDownUntil: now + 1000 },
+		{ ...account, reasons: ["quota-exhausted", "rate-limited"] },
+		{ ...account, reasons: ["quota-exhausted", "unknown"] },
+	])("does not invent a recoverable gate from incomplete or auth-blocked state", (blocked) => {
+		expect(getCreditsRecoveryWait([blocked], options, now)).toBe(0);
 	});
 });
 
