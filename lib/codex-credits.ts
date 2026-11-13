@@ -274,7 +274,7 @@ type CreditsFallbackOptions = {
 export function hasPlanQuota(entry: ExplainedAccount): boolean {
 	if (entry.eligible) return true;
 	return !entry.reasons.some(
-		(reason) => reason === "quota-exhausted" || reason === "disabled" || reason === "cooldown:auth-failure",
+		(reason) => reason === "quota-exhausted" || reason === "disabled" || reason.startsWith("disabled:") || reason === "cooldown:auth-failure",
 	);
 }
 

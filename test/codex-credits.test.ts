@@ -204,6 +204,17 @@ describe("planCreditsFallback", () => {
 		expect(plan).toEqual({ kind: "credits", indices: [2] });
 	});
 
+	it.each(["disabled:auth-failures", "disabled:workspace-deactivated", "disabled:reauth-required"])(
+		"uses funded accounts without waiting for an account marked %s",
+		(reason) => {
+			const plan = planCreditsFallback(
+				[entry(0, false, [reason]), entry(1, false, ["quota-exhausted"])],
+				{ ...base, balance: () => balance(100) },
+			);
+			expect(plan).toEqual({ kind: "credits", indices: [1] });
+		},
+	);
+
 	it("offers only spent-window accounts with credits: preferred pool first, then the largest balance, unknown last", () => {
 		const balances: Record<number, CreditsBalance | undefined> = {
 			0: balance(100),
