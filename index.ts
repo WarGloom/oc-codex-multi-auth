@@ -3184,6 +3184,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							// A degraded model must not degrade again without bound, even if a
 							// custom chain is cyclic. See MAX_QUOTA_FALLBACK_SWITCHES.
 							let quotaFallbackSwitches = 0;
+							let strictRefillRetry = false;
 
 							accountTraversal: while (true) {
 						if (cachedAccountManager && cachedAccountManager !== accountManager) {
@@ -3259,6 +3260,11 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						const isKnownUnsupported = (candidate: ManagedAccount): boolean =>
 							unsupportedAccountKeys.has(getAccountDiagnosticsKey(candidate)) ||
 							modelEntitlements.isUnsupported(getCreditsAccountKey(candidate), model);
+						if (strictAccountPool && strictRefillRetry) {
+							for (const candidate of accountManager.getAccountsSnapshot()) {
+								if (isKnownUnsupported(candidate)) attempted.add(candidate.index);
+							}
+						}
 						// One `/wham/usage` read for an account whose balance this
 						// process has not seen recently. Free, and the only way to know
 						// a balance before a turn is billed to it.
@@ -4555,6 +4561,25 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						}
 
 						if (strictAccountPool) {
+							const bucketWaitMs = Math.min(...selectionExclusions.flatMap((entry) => {
+								const account = accountManager.getAccountAt(entry.index);
+								if (!account || !isPoolMember(entry.index) || attempted.has(entry.index) || isKnownUnsupported(account)) return [];
+								if (entry.reasons.length !== 1 || entry.reasons[0] !== "token-bucket-empty") return [];
+								const wait = getTokenTracker().msUntilToken(entry.index, quotaKey);
+								return Number.isFinite(wait) && wait > 0 ? [wait] : [];
+							}));
+							if (
+								retryAllAccountsRateLimited &&
+								Number.isFinite(bucketWaitMs) &&
+								(effectiveRetryAllMaxWaitMs === 0 || bucketWaitMs <= effectiveRetryAllMaxWaitMs) &&
+								allRateLimitedRetries < retryAllAccountsMaxRetries &&
+								consumeRetryBudget("rateLimitGlobal", "Strict pool token refill", bucketWaitMs)
+							) {
+								await sleepWithCountdown(bucketWaitMs, "Waiting for strict pool token refill");
+								allRateLimitedRetries++;
+								strictRefillRetry = true;
+								continue;
+							}
 							const poolWaitMs = recoveryWaitMs;
 							const effectiveModel = model ?? requestedModel ?? "requested model";
 							const accountSnapshot = accountManager.getAccountsSnapshot();

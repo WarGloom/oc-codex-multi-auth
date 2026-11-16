@@ -5320,6 +5320,62 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				}
 			});
 
+			it("retries a strict pool after a plan account's local bucket refills", async () => {
+				vi.useFakeTimers();
+				const config = await import("../lib/config.js");
+				vi.mocked(config.loadPluginConfig).mockReturnValue({ retryAllAccountsRateLimited: true, retryAllAccountsMaxRetries: 1 });
+				vi.mocked(config.getModelAccountPool).mockReturnValue(["FAKE_B", "FAKE_C"]);
+				vi.mocked(config.getModelAccountPoolMode).mockReturnValue("strict");
+				const helpers = await import("../lib/request/fetch-helpers.js");
+				vi.mocked(helpers.transformRequestForCodex).mockImplementation(async (init, _url, _config, _mode, parsed) => ({
+					updatedInit: init ?? {}, body: { model: typeof parsed?.model === "string" ? parsed.model : "gpt-5.1" },
+				}));
+				vi.mocked(helpers.getUnsupportedCodexModelInfo).mockReturnValueOnce({ isUnsupported: true, unsupportedModel: "gpt-daybreak-blue-latest" });
+				const { getTokenTracker } = await import("../lib/rotation.js");
+				const tracker = getTokenTracker();
+				const quotaKey = "gpt-5.1:gpt-daybreak-blue-latest";
+				tracker.drain(2, quotaKey, 50);
+				const seats = [
+					{ email: "FAKE_A@example.test", accountId: "FAKE_A", eligible: true, reasons: ["eligible"] },
+					{ email: "FAKE_B@example.test", accountId: "FAKE_B", eligible: true, reasons: ["eligible"] },
+					{ email: "FAKE_C@example.test", accountId: "FAKE_C", eligible: false, reasons: ["token-bucket-empty"] },
+					{ email: "FAKE_D@example.test", accountId: "FAKE_D", eligible: true, reasons: ["eligible"] },
+				];
+				const { sdk, manager } = await withSpendCredits(false, seats);
+				const account = manager.accounts[2];
+				const unsupported = manager.accounts[1];
+				const recovering = seats[2];
+				if (!account || !unsupported || !recovering) throw new TypeError("Missing fixture account");
+				const explain = manager.getSelectionExplainability;
+				vi.spyOn(manager, "getSelectionExplainability").mockImplementation(() => {
+					recovering.eligible = tracker.hasToken(2, quotaKey);
+					recovering.reasons = recovering.eligible ? ["eligible"] : ["token-bucket-empty"];
+					return explain();
+				});
+				const select = vi.spyOn(manager, "getAccountForStrategy").mockImplementation((_strategy, _family, _model, _options, _pool, _mode, attempted) =>
+					!attempted.has(1) ? unsupported : recovering.eligible ? account : null);
+				vi.spyOn(manager, "getMinWaitTimeForFamily").mockReturnValue(0);
+				const transport = vi.fn<typeof fetch>()
+					.mockResolvedValueOnce(new Response(JSON.stringify({ detail: "model not supported" }), { status: 400 }))
+					.mockResolvedValueOnce(new Response(JSON.stringify({ content: "recovered" }), { status: 200 }));
+				globalThis.fetch = transport;
+				let settled = false;
+				const pending = sdk.fetch!("https://api.openai.com/v1/chat", {
+					method: "POST", body: JSON.stringify({ model: "gpt-daybreak-blue-latest" }),
+				}).then((response) => { settled = true; return response; });
+				await vi.advanceTimersByTimeAsync(0);
+				expect(manager.refundToken).toHaveBeenCalledWith(unsupported, "gpt-5.1", "gpt-daybreak-blue-latest");
+				expect(transport).toHaveBeenCalledTimes(1);
+				if (settled) expect((await pending).status).toBe(200);
+				await vi.advanceTimersByTimeAsync(10_000);
+				const response = await pending;
+				expect(response.status).toBe(200);
+				expect(manager.toAuthDetails).toHaveBeenCalledWith(account);
+				expect(transport).toHaveBeenCalledTimes(2);
+				expect(select).toHaveBeenCalledWith(expect.anything(), expect.anything(), "gpt-daybreak-blue-latest", expect.anything(), ["FAKE_B", "FAKE_C"], "strict", expect.any(Set));
+				expect(JSON.parse(String(transport.mock.calls[1]?.[1]?.body)).model).toBe("gpt-daybreak-blue-latest");
+			});
+
 			it("gives a funded account its credit turn after its plan turn exhausts quota", async () => {
 				const seat = { email: "FAKE@example.test", accountId: "FAKE", eligible: true, reasons: ["eligible"] };
 				const { sdk, manager } = await withSpendCredits(true, [seat]);
