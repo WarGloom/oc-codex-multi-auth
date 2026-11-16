@@ -379,7 +379,7 @@ export function formatCreditsOutOfQuotaHint(params: {
 	accounts: readonly CreditsAccountSummary[];
 }): string {
 	if (params.accounts.length === 0) {
-		return params.spendCredits ? " No account has Codex credits left to fall back on." : "";
+		return params.spendCredits ? " No fresh eligible Codex credit balance is known to be available." : "";
 	}
 	const list = formatCreditsAccountList(params.accounts);
 	return params.spendCredits

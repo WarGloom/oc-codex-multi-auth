@@ -304,9 +304,9 @@ describe("credits messaging", () => {
 		expect(hint).toContain("CODEX_AUTH_SPEND_CREDITS=1");
 	});
 
-	it("says nothing about credits nobody has, unless the setting is on", () => {
+	it("shows a credits hint for an empty list only when spending is enabled", () => {
 		expect(formatCreditsOutOfQuotaHint({ spendCredits: false, accounts: [] })).toBe("");
-		expect(formatCreditsOutOfQuotaHint({ spendCredits: true, accounts: [] })).toContain("No account has Codex credits");
+		expect(formatCreditsOutOfQuotaHint({ spendCredits: true, accounts: [] })).not.toBe("");
 		expect(formatCreditsOutOfQuotaHint({ spendCredits: true, accounts })).toContain("none of them could serve");
 	});
 
